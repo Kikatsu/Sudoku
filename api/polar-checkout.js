@@ -2,11 +2,15 @@ import { createClient } from "@supabase/supabase-js";
 import {
   corsHeadersForRequest,
   isSafeHttpsUrl,
+  nodeRequestToWebRequest,
   rejectDisallowedOrigin,
   rejectOversizedRequest,
   sameOriginFromRequest,
+  sendWebResponse,
+  serverSupabasePublishableKey,
+  serverSupabaseUrl,
   splitEnvList,
-} from "./security.js";
+} from "../server/security.js";
 
 export async function OPTIONS(request) {
   const originError = rejectDisallowedOrigin(request);
@@ -25,8 +29,8 @@ export async function POST(request) {
     return json(request, { error: "Unauthorized" }, 401);
   }
 
-  const supabaseUrl = process.env.SUPABASE_URL;
-  const supabaseAnon = process.env.SUPABASE_ANON_KEY;
+  const supabaseUrl = serverSupabaseUrl();
+  const supabaseAnon = serverSupabasePublishableKey();
   if (!supabaseUrl || !supabaseAnon) {
     return json(request, { error: "Server misconfigured" }, 500);
   }
@@ -120,4 +124,20 @@ function json(request, data, status = 200) {
     status,
     headers: { ...corsHeadersForRequest(request), "Content-Type": "application/json" },
   });
+}
+
+export default async function handler(req, res) {
+  const request = await nodeRequestToWebRequest(req);
+  let response;
+  if (req.method === "OPTIONS") {
+    response = await OPTIONS(request);
+  } else if (req.method === "POST") {
+    response = await POST(request);
+  } else {
+    response = new Response("Method not allowed", {
+      status: 405,
+      headers: { ...corsHeadersForRequest(request), Allow: "POST, OPTIONS" },
+    });
+  }
+  await sendWebResponse(res, response);
 }

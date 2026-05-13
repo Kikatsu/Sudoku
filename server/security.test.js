@@ -1,7 +1,25 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { allowedOrigins, isAllowedOrigin, isSafeHttpsUrl } from "./security.js";
+import {
+  allowedOrigins,
+  contentSecurityPolicy,
+  isAllowedOrigin,
+  isSafeHttpsUrl,
+  serverSupabasePublishableKey,
+  serverSupabaseUrl,
+} from "./security.js";
 
-const envKeys = ["APP_ORIGIN", "POLAR_ALLOWED_ORIGINS", "VITE_APP_ORIGIN", "VERCEL_URL"];
+const envKeys = [
+  "APP_ORIGIN",
+  "POLAR_ALLOWED_ORIGINS",
+  "VITE_APP_ORIGIN",
+  "VERCEL_URL",
+  "SUPABASE_URL",
+  "VITE_SUPABASE_URL",
+  "SUPABASE_ANON_KEY",
+  "SUPABASE_PUBLISHABLE_KEY",
+  "VITE_SUPABASE_PUBLISHABLE_KEY",
+  "VITE_SUPABASE_ANON_KEY",
+];
 const originalEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
 
 afterEach(() => {
@@ -40,5 +58,20 @@ describe("API security helpers", () => {
     expect(isSafeHttpsUrl("https://api.polar.sh")).toBe(true);
     expect(isSafeHttpsUrl("http://127.0.0.1:3000")).toBe(true);
     expect(isSafeHttpsUrl("http://example.com")).toBe(false);
+  });
+
+  it("allows Supabase Realtime websocket connections in CSP", () => {
+    expect(contentSecurityPolicy).toContain("wss://*.supabase.co");
+  });
+
+  it("uses Vite Supabase env vars as Vercel server fallbacks", () => {
+    delete process.env.SUPABASE_URL;
+    delete process.env.SUPABASE_ANON_KEY;
+    delete process.env.SUPABASE_PUBLISHABLE_KEY;
+    process.env.VITE_SUPABASE_URL = "https://example.supabase.co";
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY = "sb_publishable_test";
+
+    expect(serverSupabaseUrl()).toBe("https://example.supabase.co");
+    expect(serverSupabasePublishableKey()).toBe("sb_publishable_test");
   });
 });

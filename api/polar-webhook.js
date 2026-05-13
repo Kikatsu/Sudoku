@@ -1,6 +1,13 @@
 import { createClient } from "@supabase/supabase-js";
 import { validateEvent, WebhookVerificationError } from "@polar-sh/sdk/webhooks";
-import { baseSecurityHeaders, rejectOversizedRequest, splitEnvList } from "./security.js";
+import {
+  baseSecurityHeaders,
+  nodeRequestToWebRequest,
+  rejectOversizedRequest,
+  sendWebResponse,
+  serverSupabaseUrl,
+  splitEnvList,
+} from "../server/security.js";
 
 function periodEndIso(sub) {
   const end = sub?.currentPeriodEnd ?? sub?.current_period_end ?? sub?.endsAt ?? sub?.ends_at;
@@ -135,7 +142,7 @@ export async function POST(request) {
   }
 
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const supabaseUrl = process.env.SUPABASE_URL;
+  const supabaseUrl = serverSupabaseUrl();
   if (!serviceKey || !supabaseUrl) {
     return new Response("Server misconfigured", { status: 500, headers: baseSecurityHeaders });
   }
@@ -160,4 +167,16 @@ export async function POST(request) {
   }
 
   return Response.json({ ok: true }, { headers: baseSecurityHeaders });
+}
+
+export default async function handler(req, res) {
+  const request = await nodeRequestToWebRequest(req);
+  const response =
+    req.method === "POST"
+      ? await POST(request)
+      : new Response("Method not allowed", {
+          status: 405,
+          headers: { ...baseSecurityHeaders, Allow: "POST" },
+        });
+  await sendWebResponse(res, response);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveProGrantFromEvent } from "./polar-webhook.js";
+import { deriveProGrantFromEvent } from "../api/polar-webhook.js";
 
 describe("Polar webhook subscription mapping", () => {
   it("grants Pro for a matching active subscription event", () => {

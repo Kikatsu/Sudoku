@@ -1,8 +1,10 @@
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 
+export const contentSecurityPolicy =
+  "default-src 'self'; connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.polar.sh; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests";
+
 export const baseSecurityHeaders = {
-  "Content-Security-Policy":
-    "default-src 'self'; connect-src 'self' https://*.supabase.co https://api.polar.sh; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; upgrade-insecure-requests",
+  "Content-Security-Policy": contentSecurityPolicy,
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
@@ -90,4 +92,43 @@ export function isSafeHttpsUrl(value) {
   } catch {
     return false;
   }
+}
+
+export function serverSupabaseUrl() {
+  return process.env.SUPABASE_URL?.trim() || process.env.VITE_SUPABASE_URL?.trim();
+}
+
+export function serverSupabasePublishableKey() {
+  return (
+    process.env.SUPABASE_ANON_KEY?.trim() ||
+    process.env.SUPABASE_PUBLISHABLE_KEY?.trim() ||
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ||
+    process.env.VITE_SUPABASE_ANON_KEY?.trim()
+  );
+}
+
+export async function nodeRequestToWebRequest(req) {
+  const proto = req.headers["x-forwarded-proto"] || "https";
+  const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+  const url = new URL(req.url || "/", `${proto}://${host}`);
+  const init = {
+    method: req.method,
+    headers: req.headers,
+  };
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    init.body = Buffer.concat(chunks);
+  }
+  return new Request(url, init);
+}
+
+export async function sendWebResponse(res, response) {
+  res.statusCode = response.status;
+  response.headers.forEach((value, key) => {
+    res.setHeader(key, value);
+  });
+  res.end(Buffer.from(await response.arrayBuffer()));
 }
