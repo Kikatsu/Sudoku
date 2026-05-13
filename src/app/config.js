@@ -3,6 +3,18 @@ export const PROFILE_KEY = "sana-sudoku-profile-v1";
 export const PREFS_KEY = "sana-sudoku-preferences-v1";
 export const BRAND_NAME = "sudocore";
 export const BRAND_ICON_SRC = "/sudocore-icon.svg";
+export const PRODUCTION_APP_ORIGIN = "https://sudocore.vercel.app";
+
+export function getAppOrigin() {
+  const browserOrigin = globalThis.window?.location?.origin;
+  if (browserOrigin && browserOrigin !== "null") return browserOrigin.replace(/\/$/, "");
+  const configured = import.meta.env.VITE_APP_ORIGIN?.trim();
+  return (configured || PRODUCTION_APP_ORIGIN).replace(/\/$/, "");
+}
+
+export function getAuthRedirectUrl() {
+  return `${getAppOrigin()}/#/`;
+}
 
 export const DEFAULT_PREFS = {
   showFocusLens: true,

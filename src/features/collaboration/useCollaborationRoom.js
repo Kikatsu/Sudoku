@@ -190,11 +190,23 @@ export function useCollaborationRoom({
         return { ok: false, reason: valid.reason };
       }
       try {
-        await proposeCollaborationMove(supabase, {
+        const proposalId = await proposeCollaborationMove(supabase, {
           roomId,
           action: valid.action,
           boardVersion: room.boardVersion,
         });
+        const next = applyCollaborationAction(game, valid.action, {
+          smartNotes: preferences?.smartNotes,
+          proposerId: authUser?.id,
+        });
+        if (next.applied) {
+          await voteCollaborationMove(supabase, {
+            proposalId,
+            approve: true,
+            appliedGame: gameToCloudBlob(next.game, getElapsed(next.game)),
+            completed: next.completed,
+          });
+        }
         await refresh();
         return { ok: true };
       } catch (err) {
@@ -202,7 +214,7 @@ export function useCollaborationRoom({
         return { ok: false, reason: "network" };
       }
     },
-    [enabled, room, game, roomId, refresh, onToast, labels],
+    [enabled, room, game, roomId, preferences?.smartNotes, authUser?.id, refresh, onToast, labels],
   );
 
   const approveProposal = useCallback(

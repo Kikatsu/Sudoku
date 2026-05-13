@@ -44,6 +44,7 @@ import {
   COUNTRY_OPTIONS,
   DEFAULT_CITY,
   DEFAULT_COUNTRY,
+  getAuthRedirectUrl,
   LANG_META,
   THEMES,
 } from "./app/config.js";
@@ -322,6 +323,7 @@ function AuthPage({ labels, brandTagline, navAria, onBack, onComplete = onBack, 
           email,
           password,
           options: {
+            emailRedirectTo: getAuthRedirectUrl(),
             data: {
               nickname,
               city: selectedCity,
