@@ -1,85 +1,86 @@
-# sudocore — The Calm Sudoku Studio
+# sudocore — Студия спокойного судоку
 
 [![Brand Icon](public/sudocore-icon.svg)](https://sudocore.vercel.app)
 
-**sudocore** is not just another Sudoku website—it's a premium **Learning Platform and Social Service** built for the modern age. It transforms the solitary puzzle-solving experience into a mindful, educational, and collaborative journey.
+**sudocore** — это не просто сайт с цифрами. Это полноценный **SaaS-продукт**, созданный как «ежедневный ритуал для ума». Мы пересмотрели классическую игру, превратив её в осознанный образовательный опыт и социальное пространство.
 
-[Live Demo](https://sudocore.vercel.app)
-
----
-
-## 🌟 Product Vision & Philosophy
-
-In a world of high-dopamine distractions, **sudocore** serves as a "daily brain ritual." Our goal was to create a **Sudoku-as-a-Service (SaaS)** model that provides:
-
-1.  **Education over Spoilers**: Most apps just give you the answer. sudocore's AI Coach teaches you the *logic* behind the move.
-2.  **Social Connection**: Sudoku is traditionally lonely. Our real-time collaboration rooms turn it into a team-building exercise.
-3.  **Mindful Aesthetics**: A "calm-first" design language that reduces eye strain and promotes focus.
-
-## ❤️ Creative Implementation & Design Decisions
-
-We took the standard technical requirements and elevated them with creative features that differentiate **sudocore** from competitors:
-
-### 🧠 The "AI Coach" (Educational Core)
-Instead of a simple "Hint" button, we built a logic-driven mentor. It identifies complex techniques like *Locked Candidates* or *Hidden Singles* and explains them with a "Proof" step. This turns every game into a potential learning session, adding value that users are willing to pay for in the **Pro Tier**.
-
-### 🤝 Real-Time Collaboration
-Using **Supabase Realtime**, we implemented shared board sessions. This isn't just about playing together; it's about *consensus*. Players can propose moves, and others can see them in real-time, complete with remote cursors and a voting system. This makes **sudocore** a viable platform for streamers and friends.
-
-### 🏙️ Hyper-Local Competition
-The **Daily Challenge** isn't just global; it's local. By allowing users to select their city, we create a sense of community and friendly neighborhood rivalry, significantly increasing user retention.
-
-### 🎨 Design Systems
-Built with **Tailwind CSS v4** and **Framer Motion**, the interface features micro-animations and smooth state transitions that make the app feel "alive" and premium.
+[Попробовать Live Demo](https://sudocore.vercel.app)
 
 ---
 
-## ✨ Key Features
+## 🚀 Философия Продукта: От игры к Сервису
 
--   **🧠 AI Coach**: Intelligent, proof-backed hints for advanced techniques.
--   **👫 Collaborative Rooms**: Real-time multiplayer with shared board control.
--   **🛤️ Learning Path**: A structured, tiered curriculum for Sudoku mastery.
--   **📅 Daily Ritual**: Unique daily boards with streaks and city leaderboards.
--   **🏛️ Famous Puzzles**: A digital museum of historic, hand-crafted boards.
--   **🌓 Premium Themes**: Curated palettes like *Sakura*, *Ocean*, and *Logic Studio*.
--   **🌍 Globalization**: Full Localization for English, Russian, and Kazakh audiences.
--   **👑 Monetization Ready**: Integrated with **Polar.sh** for a seamless Pro subscription experience.
+В мире «быстрого дофамина» мы создали островок концентрации. Наша цель — показать, что даже классическая механика может стать современным сервисом за счет трех столпов: **Обучение, Сообщество и Эстетика.**
+
+## 🎨 Креативность и уникальность: Почему sudocore?
+
+Мы ушли от стандартного ТЗ, чтобы создать продукт, который «цепляет» пользователя:
+
+### 🧠 AI Coach: Наставник, а не спойлер
+Обычно кнопка «Подсказка» просто ставит число. В **sudocore** наш AI-тренер анализирует доску и объясняет *логику* хода (Naked Single, Locked Candidate и т.д.) с визуальным доказательством. 
+*   **Зачем это пользователю?** Он не просто проходит уровень, он становится умнее. Это создает высокую ценность **Pro-подписки**.
+
+### 🤝 Collaborative Rooms: Судоку как командный вид спорта
+Мы внедрили мультиплеер через **Supabase Realtime**. Друзья видят курсоры друг друга, могут предлагать ходы и голосовать за них.
+*   **Креативный подход:** Это превращает одиночное занятие в социальное событие или тимбилдинг. Идеально для стримов и совместного досуга.
+
+### 🏙️ Гиперлокальный азарт
+Daily Challenge привязан к городу пользователя. 
+*   **Уникальность:** Вы соревнуетесь не с абстрактным миром, а за звание лучшего игрока своего города. Это кратно повышает удержание (retention) и локальный патриотизм.
+
+### 🏛️ Музей «Знаменитых партий»
+Мы собрали исторические сетки, которые когда-то публиковались в легендарных газетах или решались на чемпионатах. 
+*   **Атмосфера:** Это добавляет продукту культурный вес и ощущение причастности к истории.
 
 ---
 
-## 🚀 Tech Stack
+## ✨ Ключевые возможности
 
--   **Frontend**: React 19, Vite 7
--   **Styling**: Tailwind CSS v4, Framer Motion
--   **Data & Realtime**: Supabase (Postgres + Realtime + Auth)
--   **Business Logic**: Polar.sh (Subscription SaaS infrastructure)
--   **Architecture**: Feature-sliced design for scalability and maintainability.
+-   **🧠 AI Coach**: Обучающие подсказки с разбором техник.
+-   **👫 Живые комнаты**: Совместное решение в реальном времени.
+-   **🛤️ Путь ученика**: Структурированные уроки от новичка до гроссмейстера.
+-   **📅 Daily Ritual**: Ежедневное испытание с системой Streak и XP.
+-   **🌓 Темы оформления**: Премиальные палитры (Ocean, Sakura, Logic Studio), созданные для минимального утомления глаз.
+-   **🌍 Мультиязычность**: Полная локализация (RU, EN, KK).
+-   **👑 Pro-монетизация**: Готовая интеграция с **Polar.sh** для подписок.
 
 ---
 
-## 🛠️ Getting Started
+## 🛠️ Технологический стек
 
-### Prerequisites
+Продукт построен на базе современных и масштабируемых технологий:
+
+-   **Frontend**: React 19 + Vite 7 (максимальная скорость работы).
+-   **Styling**: Tailwind CSS v4 + Framer Motion (плавные микро-анимации).
+-   **Backend**: Supabase (Auth, Realtime, Postgres).
+-   **Payments**: [Polar.sh](https://polar.sh) — современная инфраструктура для SaaS-подписок.
+-   **Architecture**: Feature-Sliced Design (FSD) для чистоты и легкости поддержки кода.
+
+---
+
+## ⚙️ Быстрый старт
+
+### Требования
 -   Node.js (v18+)
--   Supabase Project
--   Polar.sh Account (for Pro features)
+-   Проект в Supabase
+-   Аккаунт Polar.sh (для работы Pro-функций)
 
-### Installation
-1.  **Clone & Install**:
+### Установка
+1.  **Клонирование**:
     ```bash
     git clone https://github.com/Kikatsu/Sudoku.git
     cd Sudoku
     npm install
     ```
-2.  **Configure Environment**:
+2.  **Настройка окружения**:
+    Скопируйте `.env.example` в `.env` и добавьте ключи Supabase:
     ```bash
     cp .env.example .env
-    # Add your VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY
     ```
-3.  **Run Development**:
+3.  **Запуск**:
     ```bash
     npm run dev
     ```
 
-## 📄 License
-This project is licensed under the MIT License.
+## 📄 Лицензия
+Проект распространяется под лицензией MIT.
