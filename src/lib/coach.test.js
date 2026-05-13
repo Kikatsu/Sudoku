@@ -152,4 +152,20 @@ describe("local coach techniques", () => {
     expect(step.strict).toBe(false);
     expect(step.summary).toContain("убрать конфликт");
   });
+
+  it("returns structured proof data for coach UI and review surfaces", () => {
+    const values = [...SOLUTION];
+    values[0] = 0;
+
+    const step = createCoachStep(makeGame(values), "hint");
+
+    expect(step.proofData).toMatchObject({
+      technique: "Naked Single",
+      kind: "placement",
+      target: 0,
+      number: 1,
+      strict: true,
+    });
+    expect(step.proofData.steps.length).toBeGreaterThan(1);
+  });
 });

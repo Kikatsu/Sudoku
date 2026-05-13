@@ -41,11 +41,11 @@ const TECHNIQUE_COPY = {
 export function createCoachStep(game, mode = "hint", options = {}) {
   const conflicts = getConflictIndices(game.values);
   if (conflicts.size > 0 && mode !== "why") {
-    return createBoardConflictStep(game.values, conflicts);
+    return enrichCoachStep(createBoardConflictStep(game.values, conflicts));
   }
 
   if (mode === "why") {
-    return explainCandidate(game, options.index, options.number);
+    return enrichCoachStep(explainCandidate(game, options.index, options.number));
   }
 
   const hint =
@@ -55,7 +55,7 @@ export function createCoachStep(game, mode = "hint", options = {}) {
     findCandidateScan(game);
 
   if (!hint) {
-    return {
+    return enrichCoachStep({
       id: "coach-complete",
       mode,
       kind: "status",
@@ -70,17 +70,17 @@ export function createCoachStep(game, mode = "hint", options = {}) {
       explanation: "Проверьте красные конфликты или заполните очевидные клетки по правилам строк, столбцов и квадратов.",
       proof: "Coach не будет угадывать число, если ход не доказан.",
       highlights: emptyHighlights(),
-    };
+    });
   }
 
-  return {
+  return enrichCoachStep({
     ...hint,
     mode,
     id: `${hint.technique}-${hint.target ?? "unit"}-${hint.number ?? "scan"}`,
-  };
+  });
 }
 
-export function createLessonStep(game) {
+export function createLessonStep(game, options = {}) {
   const dateKey = getDateKey();
   const rotation = [
     findNakedSingle,
@@ -88,18 +88,33 @@ export function createLessonStep(game) {
     findLockedCandidate,
     findCandidateScan,
   ];
+  if (options.technique) {
+    const preferred = rotation.find((finder) => {
+      const step = finder(game);
+      return step?.technique === options.technique;
+    });
+    const preferredStep = preferred?.(game);
+    if (preferredStep) {
+      return enrichCoachStep({
+        ...preferredStep,
+        mode: "lesson",
+        id: `lesson-${preferredStep.technique}-${preferredStep.target ?? preferredStep.number ?? "scan"}`,
+        summary: `Урок: ${TECHNIQUE_COPY[preferredStep.technique]?.short || preferredStep.summary}`,
+      });
+    }
+  }
   const start = hashText(dateKey) % rotation.length;
 
   for (let offset = 0; offset < rotation.length; offset += 1) {
     const finder = rotation[(start + offset) % rotation.length];
     const step = finder(game);
     if (step) {
-      return {
+      return enrichCoachStep({
         ...step,
         mode: "lesson",
         id: `lesson-${step.technique}-${step.target ?? step.number ?? "scan"}`,
-        summary: `Урок дня: ${TECHNIQUE_COPY[step.technique].short}`,
-      };
+        summary: `Разбор техники: ${TECHNIQUE_COPY[step.technique].short}`,
+      });
     }
   }
 
@@ -244,8 +259,8 @@ function findNakedSingle(game) {
         confidence: 1,
         strict: true,
         summary: `${cellName(index)} может быть только ${number}.`,
-        explanation: "Все остальные цифры уже встречаются в строке, столбце или квадрате этой клетки.",
-        proof: `Кандидаты ${cellName(index)}: ${candidates.join(", ")}. Значит ход доказан без угадывания.`,
+        explanation: "Смотрите на клетку как на пересечение трех зон: строки, столбца и квадрата. В этих зонах уже заняты восемь других цифр, поэтому остается единственный законный вариант.",
+        proof: `Кандидаты ${cellName(index)}: ${candidates.join(", ")}. Если кандидат один, это не подсказка на удачу, а строгий ход.`,
         highlights: {
           ...emptyHighlights(),
           target: [index],
@@ -258,6 +273,59 @@ function findNakedSingle(game) {
   }
 
   return null;
+}
+
+function enrichCoachStep(step) {
+  if (!step) return step;
+  const reasoning = createReasoningSteps(step);
+  return {
+    ...step,
+    reasoning,
+    proofData: {
+      technique: step.technique,
+      kind: step.kind,
+      target: step.target,
+      number: step.number,
+      candidates: step.candidates || [],
+      strict: Boolean(step.strict),
+      highlights: step.highlights || emptyHighlights(),
+      steps: [step.summary, ...reasoning, step.explanation, step.proof].filter(Boolean),
+    },
+  };
+}
+
+function createReasoningSteps(step) {
+  if (step.technique === "Naked Single") {
+    return [
+      "Проверьте кандидатов выбранной клетки.",
+      "Вычеркните цифры, которые уже есть в строке, столбце и квадрате.",
+      "Если осталась одна цифра, ее можно ставить без риска.",
+    ];
+  }
+  if (step.technique === "Hidden Single") {
+    return [
+      "Выберите одну зону: строку, столбец или квадрат.",
+      "Проверьте все места, где может стоять нужное число.",
+      "Если место одно, это обязательный ход, даже если в самой клетке несколько кандидатов.",
+    ];
+  }
+  if (step.technique === "Locked Candidate / Pointing") {
+    return [
+      "Найдите кандидатов числа внутри одного квадрата.",
+      "Если они лежат в одной строке или столбце, квадрат забирает эту линию себе.",
+      "Удалите этот кандидат из клеток той же линии за пределами квадрата.",
+    ];
+  }
+  if (step.technique === "Conflict Explanation") {
+    return [
+      "Сравните выбранную клетку с ее строкой, столбцом и квадратом.",
+      "Любое повторение числа в этих зонах делает ход невозможным.",
+    ];
+  }
+  return [
+    "Сузьте внимание до клетки с минимальным числом кандидатов.",
+    "Проверяйте кандидаты через пересечения, а не угадыванием.",
+  ];
 }
 
 function findHiddenSingle(game) {
@@ -280,8 +348,8 @@ function findHiddenSingle(game) {
           confidence: 0.98,
           strict: true,
           summary: `${number} может стоять только в ${cellName(target)} внутри ${UNIT_LABELS[unitIndex]}.`,
-          explanation: "Другие пустые клетки этой зоны не допускают это число по пересечениям.",
-          proof: `${UNIT_LABELS[unitIndex]} имеет ровно одну позицию для ${number}: ${cellName(target)}.`,
+          explanation: "Здесь важно думать не от клетки, а от числа. Пройдитесь по всей зоне и спросите: где вообще может стоять это число? Все позиции, кроме одной, отсекаются строками, столбцами или квадратами.",
+          proof: `${UNIT_LABELS[unitIndex]} имеет ровно одну позицию для ${number}: ${cellName(target)}. Значит число обязано стоять именно там.`,
           highlights: {
             ...emptyHighlights(),
             target: [target],
@@ -337,7 +405,7 @@ function findLockedCandidate(game) {
         confidence: 0.86,
         strict: false,
         summary: `Кандидат ${number} заперт в ${lineName} внутри квадрата ${boxOffset + 1}.`,
-        explanation: `Все варианты ${number} в этом квадрате лежат на одной линии, значит вне квадрата на этой линии ${number} можно исключить.`,
+        explanation: `Сначала смотрим только на квадрат: все возможные места для ${number} попали в одну линию. Значит эта линия уже занята этим квадратом, и за пределами квадрата на той же линии ${number} больше не нужен.`,
         proof: `Клетки-кандидаты в квадрате: ${positions.map(cellName).join(", ")}. Исключения: ${eliminations.map(cellName).join(", ")}.`,
         highlights: {
           ...emptyHighlights(),
@@ -372,8 +440,8 @@ function findCandidateScan(game) {
     confidence: 0.55,
     strict: false,
     summary: `${cellName(choice.index)} сейчас самая узкая клетка: ${choice.candidates.length} кандидата.`,
-    explanation: "Это не ход для автопостановки, но хорошее место для ручной проверки пересечений.",
-    proof: `Кандидаты: ${choice.candidates.join(", ")}.`,
+    explanation: "Это не ход для автопостановки. Но когда вариантов мало, легче проверить каждый кандидат: смотрите, какой из них ломает строку, столбец или квадрат, и ищите число, которое становится единственным в зоне.",
+    proof: `Кандидаты: ${choice.candidates.join(", ")}. Начните с этой короткой вилки, а не со случайной пустой клетки.`,
     highlights: {
       ...emptyHighlights(),
       target: [choice.index],

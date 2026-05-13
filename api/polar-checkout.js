@@ -1,25 +1,34 @@
 import { createClient } from "@supabase/supabase-js";
+import {
+  corsHeadersForRequest,
+  isSafeHttpsUrl,
+  rejectDisallowedOrigin,
+  rejectOversizedRequest,
+  sameOriginFromRequest,
+  splitEnvList,
+} from "./security.js";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, content-type",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-};
-
-export async function OPTIONS() {
-  return new Response(null, { status: 204, headers: corsHeaders });
+export async function OPTIONS(request) {
+  const originError = rejectDisallowedOrigin(request);
+  if (originError) return originError;
+  return new Response(null, { status: 204, headers: corsHeadersForRequest(request) });
 }
 
 export async function POST(request) {
+  const originError = rejectDisallowedOrigin(request);
+  if (originError) return originError;
+  const sizeError = rejectOversizedRequest(request, 16 * 1024);
+  if (sizeError) return sizeError;
+
   const authHeader = request.headers.get("authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return json({ error: "Unauthorized" }, 401);
+    return json(request, { error: "Unauthorized" }, 401);
   }
 
   const supabaseUrl = process.env.SUPABASE_URL;
   const supabaseAnon = process.env.SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseAnon) {
-    return json({ error: "Server misconfigured" }, 500);
+    return json(request, { error: "Server misconfigured" }, 500);
   }
 
   const supabase = createClient(supabaseUrl, supabaseAnon, {
@@ -31,23 +40,30 @@ export async function POST(request) {
     error: userError,
   } = await supabase.auth.getUser();
   if (userError || !user) {
-    return json({ error: "Invalid session" }, 401);
+    return json(request, { error: "Invalid session" }, 401);
   }
 
   const polarToken = process.env.POLAR_ACCESS_TOKEN;
   const productRaw = process.env.POLAR_PRODUCT_IDS || process.env.POLAR_PRODUCT_ID;
-  const products = productRaw
-    ?.split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const products = splitEnvList(productRaw);
 
   if (!polarToken || !products?.length) {
-    return json({ error: "Polar is not configured on the server" }, 500);
+    return json(request, { error: "Polar is not configured on the server" }, 500);
   }
 
   const apiBase = (process.env.POLAR_API_BASE || "https://api.polar.sh").replace(/\/$/, "");
-  const successUrl = process.env.POLAR_SUCCESS_URL || undefined;
-  const returnUrl = process.env.POLAR_RETURN_URL || undefined;
+  if (!isSafeHttpsUrl(apiBase)) {
+    console.error("POLAR_API_BASE must be HTTPS except for localhost development");
+    return json(request, { error: "Server misconfigured" }, 500);
+  }
+
+  const origin = sameOriginFromRequest(request);
+  const successUrl = process.env.POLAR_SUCCESS_URL || (origin ? `${origin}/#/` : undefined);
+  const returnUrl = process.env.POLAR_RETURN_URL || (origin ? `${origin}/#/` : undefined);
+  if ((successUrl && !isSafeHttpsUrl(successUrl)) || (returnUrl && !isSafeHttpsUrl(returnUrl))) {
+    console.error("Polar redirect URLs must be HTTPS except for localhost development");
+    return json(request, { error: "Server misconfigured" }, 500);
+  }
 
   const customerIp =
     request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
@@ -64,6 +80,13 @@ export async function POST(request) {
       products,
       external_customer_id: user.id,
       customer_email: user.email ?? undefined,
+      metadata: {
+        supabase_user_id: user.id,
+        plan: "pro",
+      },
+      customer_metadata: {
+        supabase_user_id: user.id,
+      },
       success_url: successUrl,
       return_url: returnUrl,
       customer_ip_address: customerIp,
@@ -73,24 +96,28 @@ export async function POST(request) {
   if (!polarRes.ok) {
     const detail = await polarRes.text();
     console.error("Polar checkout error", polarRes.status, detail);
-    return json({ error: "Polar checkout failed", detail }, 502);
+    return json(request, { error: "Polar checkout failed" }, 502);
   }
 
   const checkout = await polarRes.json();
   if (!checkout?.url) {
-    return json({ error: "No checkout URL returned" }, 502);
+    return json(request, { error: "No checkout URL returned" }, 502);
+  }
+  if (!isSafeHttpsUrl(checkout.url)) {
+    console.error("Polar checkout returned an unsafe URL");
+    return json(request, { error: "Polar checkout failed" }, 502);
   }
 
-  return json({ url: checkout.url }, 200);
+  return json(request, { url: checkout.url }, 200);
 }
 
 /**
  * @param {unknown} data
  * @param {number} status
  */
-function json(data, status = 200) {
+function json(request, data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...corsHeadersForRequest(request), "Content-Type": "application/json" },
   });
 }

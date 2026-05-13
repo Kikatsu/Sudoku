@@ -66,6 +66,8 @@ export function createGame(difficulty = "medium", mode = "free", options = {}) {
     future: [],
     hintCells: [],
     lastNumber: null,
+    wrongEntries: [],
+    activityLog: [],
     awardXp: 0,
     suppressVictoryRewards: false,
   };
@@ -116,6 +118,8 @@ export function createGameFromPuzzle({ id, puzzle, solution, difficulty = "impos
     future: [],
     hintCells: [],
     lastNumber: null,
+    wrongEntries: [],
+    activityLog: [],
     awardXp: 0,
     suppressVictoryRewards: false,
   };

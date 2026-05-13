@@ -1,6 +1,70 @@
 /** Ordered path: unlock next after any completion. XP (clean solve) uses xpReward. */
 
-export const LEARNING_LEVELS = [
+const TECHNIQUE_PATH = [
+  "Naked Single",
+  "Naked Single",
+  "Hidden Single",
+  "Hidden Single",
+  "Candidate Scan",
+  "Candidate Scan",
+  "Locked Candidate / Pointing",
+  "Locked Candidate / Pointing",
+  "Naked Pair",
+  "Candidate Scan",
+  "Hidden Single",
+  "Candidate Scan",
+  "Locked Candidate / Pointing",
+  "Locked Candidate / Pointing",
+  "Candidate Pressure",
+  "Candidate Pressure",
+  "Advanced Scan",
+  "Mixed Review",
+];
+
+const TECHNIQUE_OBJECTIVES = {
+  "Naked Single": {
+    ru: "Находить клетки, где остался ровно один кандидат.",
+    en: "Find cells with exactly one remaining candidate.",
+    kk: "Бір ғана кандидат қалған ұяшықтарды табу.",
+  },
+  "Hidden Single": {
+    ru: "Находить число, которое в зоне может стоять только в одной клетке.",
+    en: "Find a number that has only one possible cell inside a unit.",
+    kk: "Аймақта тек бір ұяшыққа ғана келе алатын санды табу.",
+  },
+  "Locked Candidate / Pointing": {
+    ru: "Видеть кандидаты, запертые в одной линии внутри квадрата.",
+    en: "Spot candidates locked into one line inside a box.",
+    kk: "Шаршы ішінде бір сызыққа бекітілген кандидаттарды көру.",
+  },
+  "Candidate Scan": {
+    ru: "Выбирать следующую сильную клетку без угадывания.",
+    en: "Choose the next strong cell without guessing.",
+    kk: "Болжамсыз келесі маңызды ұяшықты таңдау.",
+  },
+  "Naked Pair": {
+    ru: "Замечать пары кандидатов и очищать лишние варианты.",
+    en: "Recognize candidate pairs and remove extra options.",
+    kk: "Кандидат жұптарын байқап, артық нұсқаларды алып тастау.",
+  },
+  "Candidate Pressure": {
+    ru: "Работать с плотной сеткой кандидатов в сложных позициях.",
+    en: "Handle dense candidate grids in harder positions.",
+    kk: "Күрделі позициядағы тығыз кандидат торымен жұмыс істеу.",
+  },
+  "Advanced Scan": {
+    ru: "Комбинировать несколько техник перед ходом.",
+    en: "Combine multiple techniques before placing a number.",
+    kk: "Сан қоймас бұрын бірнеше техниканы біріктіру.",
+  },
+  "Mixed Review": {
+    ru: "Закрепить весь путь: одиночки, исключения и фокус.",
+    en: "Review the full path: singles, exclusions, and focus.",
+    kk: "Толық жолды бекіту: жалғыздар, алып тастау және назар.",
+  },
+};
+
+const BASE_LEARNING_LEVELS = [
   {
     id: "l01",
     difficulty: "easy",
@@ -128,6 +192,17 @@ export const LEARNING_LEVELS = [
     title: { ru: "Финал пути", en: "Path finale", kk: "Жолдың финалы" },
   },
 ];
+
+export const LEARNING_LEVELS = BASE_LEARNING_LEVELS.map((level, index, levels) => {
+  const technique = TECHNIQUE_PATH[index] || "Candidate Scan";
+  return {
+    ...level,
+    technique,
+    objective: TECHNIQUE_OBJECTIVES[technique] || TECHNIQUE_OBJECTIVES["Candidate Scan"],
+    recommendedDifficulty: level.difficulty,
+    prerequisiteLessonIds: index > 0 ? [levels[index - 1].id] : [],
+  };
+});
 
 export function getLearningLevelById(id) {
   return LEARNING_LEVELS.find((l) => l.id === id) || null;

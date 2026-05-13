@@ -18,49 +18,72 @@ import {
   LogIn,
   Lock,
   Maximize2,
+  Menu,
+  MessageCircle,
   Palette,
   Pencil,
   Play,
   Redo2,
   RefreshCw,
+  Send,
+  Share2,
   Sparkles,
   Settings,
   Trophy,
   Undo2,
   Volume2,
   VolumeX,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createCoachStep, createLessonStep } from "./lib/coach.js";
-import { pickBestCoachVoice } from "./lib/coachSpeech.js";
-import { playGameSound } from "./lib/gameSounds.js";
 import {
-  computeProStatus,
-  fetchRemoteHistory,
-  gameToCloudBlob,
-  hydrateGameFromCloud,
-  mergeHistoryFromRemote,
-  mergePreferencesWithRemote,
-  mergeProfileForSync,
-  mapProfileFromDb,
-  profileToRemotePatch,
-  upsertHistoryRecords,
-} from "./lib/cloudSync.js";
+  BOARD_SIZES,
+  BRAND_ICON_SRC,
+  BRAND_NAME,
+  CITY_OPTIONS,
+  COUNTRY_OPTIONS,
+  DEFAULT_CITY,
+  DEFAULT_COUNTRY,
+  LANG_META,
+  THEMES,
+} from "./app/config.js";
+import { navigateTo, parseAppRoute, ROUTES } from "./app/routes.js";
+import { useAuthSession } from "./features/auth/useAuthSession.js";
+import { createCollaborationRoom } from "./features/collaboration/collaborationService.js";
+import { summarizeAction } from "./features/collaboration/collaborationRules.js";
+import { useCollaborationRoom } from "./features/collaboration/useCollaborationRoom.js";
+import { TRANSLATIONS } from "./i18n/translations.js";
+import { getElapsed, loadGame, saveGame, withHistory } from "./features/game/gameRepository.js";
+import { GAME_ACTIONS, useSudokuGame } from "./features/game/useSudokuGame.js";
+import { useDailyLeaderboard } from "./features/leaderboard/useDailyLeaderboard.js";
+import { getLevel, getNextLevel, loadProfile, saveProfile } from "./features/profile/profileRepository.js";
+import { clampVolume, loadPreferences, savePreferences } from "./features/settings/preferencesRepository.js";
+import {
+  FREE_TIER_LIMITS,
+  canAnalyzeHistory,
+  canStartGame,
+  canUseCoach,
+  isProfilePro,
+  isThemePro,
+  recordLimitUsage,
+  startProCheckout,
+} from "./features/subscription/subscriptionService.js";
+import { useCloudSync } from "./features/sync/useCloudSync.js";
+import { createCoachStep, createLessonStep } from "./lib/coach.js";
+import { getCoachVoiceOptions, pickBestCoachVoice } from "./lib/coachSpeech.js";
+import { playGameSound } from "./lib/gameSounds.js";
+import { upsertDailyLeaderboardEntry, upsertHistoryRecords } from "./lib/cloudSync.js";
 import {
   HISTORY_PREVIEW_RECORD,
   appendToArchive,
   gameHasProgress,
   loadArchive,
-  normalizeSelection,
   restoreGameFromRecord,
-  saveArchive,
   sortRecords,
 } from "./lib/gameHistory.js";
-import { createPolarCheckoutSession } from "./lib/polarCheckout.js";
 import { isSupabaseConfigured, supabase } from "./lib/supabaseClient.js";
 import {
   DIFFICULTIES,
-  GAME_RULES_VERSION,
   NUMBERS,
   canEnterSolutionNumber,
   createGame,
@@ -71,13 +94,10 @@ import {
   getDateKey,
   getPeers,
   isSolved,
-  normalizeNotes,
-  sanitizeEditableValues,
 } from "./lib/sudoku.js";
 import {
   FAMOUS_PUZZLES,
   getFamousPuzzleById,
-  loadFamousBests,
   recordFamousBest,
 } from "./lib/famousPuzzles.js";
 import { LEARNING_LEVELS, getLearningLevelById, isLessonUnlocked } from "./lib/learningLevels.js";
@@ -87,843 +107,13 @@ import {
   markLessonXpAwarded,
   saveLearningProgress,
 } from "./lib/learningProgress.js";
+import { SUDOKU_TECHNIQUES, TECHNIQUE_TIERS } from "./lib/techniques.js";
 
-const STORAGE_KEY = "sana-sudoku-state-v3";
-const PROFILE_KEY = "sana-sudoku-profile-v1";
-const PREFS_KEY = "sana-sudoku-preferences-v1";
-const BRAND_NAME = "sudocore";
-const BRAND_ICON_SRC = "/sudocore-icon.svg";
-
-const DEFAULT_PREFS = {
-  showFocusLens: true,
-  soundEnabled: true,
-  soundVolume: 0.75,
-  boardSize: "standard",
-  theme: "studio",
-  language: "ru",
+const AUTH_RETURN_KEY = "sudocore-auth-return-v1";
+const POST_AUTH_ACTION_KEY = "sudocore-post-auth-action-v1";
+const POST_AUTH_ACTIONS = {
+  shareCollaboration: "share-collaboration",
 };
-
-const BOARD_SIZES = [
-  { key: "compact", labelKey: "boardCompact" },
-  { key: "standard", labelKey: "boardStandard" },
-  { key: "expanded", labelKey: "boardExpanded" },
-];
-
-const LANG_META = {
-  ru: { label: "Русский", locale: "ru-RU", speech: "ru-RU" },
-  en: { label: "English", locale: "en-US", speech: "en-US" },
-  kk: { label: "Қазақша", locale: "kk-KZ", speech: "kk-KZ" },
-};
-
-const THEMES = [
-  { key: "studio", label: "Logic Studio" },
-  { key: "light", label: "White" },
-  { key: "dark", label: "Black" },
-  { key: "ocean", label: "Ocean" },
-  { key: "sakura", label: "Sakura" },
-];
-
-const TRANSLATIONS = {
-  ru: {
-    tagline: "daily brain ritual",
-    nav: {
-      rules: "Правила",
-      learn: "Обучение",
-      pro: "Upgrade to Pro",
-      signIn: "Войти",
-      signOut: "Выйти",
-      settings: "Настройки",
-      history: "История",
-      famous: "Знаменитые партии",
-    },
-    modes: {
-      daily: "Сегодняшний ритуал",
-      free: "Свободная тренировка",
-      dailyTitle: "Daily Challenge",
-      freeTitle: "режим",
-    },
-    stats: { time: "время", mistakes: "ошибки", hints: "подсказки", solved: "решено" },
-    difficulties: {
-      easy: "Легко",
-      medium: "Средне",
-      hard: "Сложно",
-      expert: "Мастер",
-      impossible: "Невозможно",
-    },
-    actions: {
-      pencil: "Карандаш",
-      erase: "Стереть",
-      undo: "Отмена",
-      redo: "Повтор",
-      newGame: "Новая игра",
-      play: "Играть",
-      backToLessons: "К урокам",
-      restartLesson: "Заново",
-      apply: "Поставить число",
-      proofShow: "Показать доказательство",
-      proofHide: "Скрыть доказательство",
-      close: "Закрыть",
-    },
-    panels: {
-      daily: "Daily Challenge",
-      filled: (filled) => `${filled} из 81 ячеек заполнено`,
-      coach: "AI Coach",
-      mentor: "Наставник",
-      profile: "Профиль",
-      leaderboard: "Городской топ",
-      local: "local",
-    },
-    coach: {
-      hint: "Подсказка",
-      lesson: "Обучение",
-      why: "Почему нельзя",
-      empty:
-        "Выберите ячейку или нажмите подсказку. Я объясню ход без спойлера всего решения.",
-      mini: "Нажмите режим выше, и Coach найдет следующий обучающий шаг.",
-      dailyReady: "Daily Challenge загружен. Начните с ячеек, где меньше всего вариантов.",
-      freeReady: "Новая тренировка готова. Выберите клетку и держите ритм спокойно.",
-      proof: "Доказательство",
-      placed: "Поставил число в доказанную клетку.",
-    },
-    lens: {
-      title: "Focus Lens",
-      aria: "Фокус выбранной клетки",
-      hide: "Скрыть Focus Lens",
-      show: "Показать Focus Lens",
-      fixed: "задана",
-      entered: "введена",
-      empty: "пустая",
-      notes: "карандаш",
-      number: "число",
-      noCandidates: "нет кандидатов",
-      currentNumber: (value) => `число ${value}`,
-      context: "Контекст заполнения",
-      candidates: "Кандидаты выбранной клетки",
-    },
-    settings: {
-      title: "Настройки",
-      eyebrow: "Studio controls",
-      lens: "Focus Lens",
-      lensCopy: "Показывать панель выбранной клетки возле доски.",
-      sound: "Звук",
-      soundCopy: "Мягкие игровые эффекты и озвучка AI Coach.",
-      volume: "Громкость",
-      boardSize: "Размер доски",
-      boardSizeCopy: "Увеличьте игровое поле, но в аккуратных пределах.",
-      boardCompact: "Компактно",
-      boardStandard: "Обычно",
-      boardExpanded: "Крупнее",
-      theme: "Тема",
-      language: "Язык",
-    },
-    history: {
-      title: "История игр",
-      eyebrow: "Архив партий",
-      empty: "Здесь появятся завершённые партии и незавершённые, когда вы начнёте новую игру.",
-      sortLabel: "Сортировка",
-      sortDateNew: "Сначала новые",
-      sortDateOld: "Сначала старые",
-      sortTimeFast: "Быстрее по времени",
-      sortTimeSlow: "Дольше по времени",
-      sortMistakesLow: "Меньше ошибок ввода",
-      sortMistakesHigh: "Больше ошибок ввода",
-      won: "Победа",
-      abandoned: "Не завершено",
-      moves: "Вводы цифр",
-      mistakes: "Ошибки (счётчик)",
-      hints: "Подсказки",
-      time: "Время партии",
-      replay: "Повтор ходов",
-      step: (n, max) => `Шаг ${n} / ${max}`,
-      openGame: "Разбор",
-      back: "Назад к списку",
-      better: "Лучше:",
-      wrongDigit: "Неверная цифра",
-      erased: "Стерто",
-      correct: "Верно",
-      noWrongMoves: "Неверных вводов по сравнению с решением не было.",
-      wrongSummary: (n) => `Неверных вводов: ${n}`,
-      datePlayed: "Дата",
-      outcome: "Итог",
-      difficulty: "Сложность",
-      filled: "Заполнено",
-      clues: "Дано клеток",
-      xp: "XP",
-      previewTitle: "Пример: так будет выглядеть история",
-      previewHint: "Демонстрация интерфейса. Настоящие партии появятся после игры.",
-      sampleTag: "Пример",
-      stepPrev: "Предыдущий шаг",
-      stepNext: "Следующий шаг",
-      colBoard: "Позиция",
-      colWhen: "Дата",
-      colOutcome: "Итог",
-      colMode: "Режим / сложность",
-      colTime: "Время",
-      colMoves: "Вводы",
-      colMistakes: "Ошибки",
-      colHints: "Подсказки",
-      colFilled: "Заполнено",
-      colAction: "Действие",
-      actionOpen: "Открыть",
-      actionContinue: "Продолжить",
-      actionAnalyze: "Анализ",
-      analyzeTitle: "Разбор партии",
-      finalBoard: "Финальная позиция",
-      showDock: "Показать",
-      hideDock: "Скрыть",
-      emptyCompact: "Архив появится после первых партий.",
-      savedCount: (count) => `${count} ${count === 1 ? "партия" : count >= 2 && count <= 4 ? "партии" : "партий"} сохранено`,
-    },
-    modals: {
-      proEyebrow: "Подписка sudocore Pro",
-      proTitle: "$2.99 в месяц",
-      proCopy: "Безлимитные партии, полноценный AI Coach, глубокая статистика и ранний доступ к темам.",
-      proTagline: "Тренируйтесь глубже: без лимитов, с полным тренером и понятной статистикой.",
-      proPriceCaption: "Ежемесячно · отмена в любой момент",
-      proFeaturesAria: "Что даёт подписка Pro",
-      proFeatures: [
-        {
-          title: "Безлимитные партии",
-          detail: "Неограниченно партий в ежедневном испытании и в свободной тренировке.",
-        },
-        { title: "Полный AI Coach", detail: "Подсказки, уроки и объяснения без урезаний." },
-        { title: "Глубокая статистика", detail: "История партий и прогресс в деталях." },
-        { title: "Ранний доступ к темам", detail: "Новые палитры раньше бесплатной версии." },
-      ],
-      proFeatureIncluded: "Уже в вашей подписке",
-      proActive: "Подписка Pro активна.",
-      proUntil: (date) => `До ${date}`,
-      proBillingNote:
-        "Оплата через Polar; вебхук на Vercel обновляет профиль в Supabase.",
-      proSignIn: "Войдите в аккаунт, чтобы оформить Pro.",
-      proCtaSignIn: "Войти и оформить Pro",
-      polarBusy: "Открываем Polar…",
-      polarFail: "Не удалось открыть оплату. Проверьте Vercel /api и секреты Polar.",
-      proCta: "Оформить Pro",
-      rulesTitle: "Правила судоку",
-      rulesEyebrow: "Как играть",
-      rules: [
-        "Заполните пустые клетки цифрами от 1 до 9.",
-        "В каждой строке каждая цифра может встречаться только один раз.",
-        "В каждом столбце каждая цифра может встречаться только один раз.",
-        "В каждом квадрате 3x3 каждая цифра тоже встречается только один раз.",
-        "Красная подсветка показывает конфликт. Карандаш помогает ставить маленькие заметки.",
-        "Победа засчитывается только когда вся доска заполнена и все правила выполнены.",
-      ],
-      victory: "Победа",
-      solved: "Решено",
-      solvedSubtitle: "Уникальное решение найдено",
-    },
-    toasts: {
-      selectCell: "Сначала выберите ячейку.",
-      signedOut: "Вы вышли.",
-      signedIn: "Вы вошли. Прогресс сохраняется в облаке.",
-      wrongEntry: "Это число не подходит сюда. Доска осталась без изменений.",
-      solved: (xp) => `Решено: +${xp} XP. Отличный ритм.`,
-      solvedReplay: "Сетка решена. XP за эту партию уже был начислен.",
-      learningXp: (xp) => `Урок: +${xp} XP за чистое решение.`,
-      learningNoXp: "Урок пройден без XP — использовалась помощь Coach.",
-    },
-    aria: {
-      nav: "Главная навигация",
-      game: "Игровая зона",
-      stats: "Статистика партии",
-      difficulty: "Выбор сложности",
-      board: "Судоку 9 на 9",
-      numbers: "Ввод чисел",
-      tools: "Инструменты",
-      side: "Прогресс и помощник",
-      coachMode: "Режим AI Coach",
-      learnNav: "Обучение",
-      cell: (index, value) => (value ? `Ячейка ${index + 1}, число ${value}` : `Ячейка ${index + 1}, пусто`),
-    },
-    learning: {
-      eyebrow: "Тропа обучения",
-      title: "Уроки судоку",
-      lead: "Проходите уровни по порядку. Чистое решение — без подсказок и без хода «Поставить» от Coach — приносит XP.",
-      tierBeginner: "Начальный",
-      tierPractice: "Практика",
-      tierChallenge: "Вызов",
-      locked: "Сначала пройдите предыдущий урок.",
-      completed: "Пройдено",
-      cleanBonus: "Чисто — XP",
-      cluesShort: (n) => `${n} дано`,
-      homeBack: "К игре",
-      back: "Назад к урокам",
-      ariaPage: "Каталог обучения",
-      ariaCard: (title) => `Урок: ${title}`,
-      lessonEyebrow: "Урок",
-    },
-    famous: {
-      eyebrow: "Знаменитые судоку",
-      title: "Партии, вошедшие в историю",
-      lead: "Соберите подборку партий, которыми зачитывались газеты и форумы. Историческая хроника, ваше лучшее время и кнопка «Играть» — без рандома, та самая сетка.",
-      back: "Вернуться к игре",
-      cluesShort: (n) => `${n} подсказок`,
-      year: "Год",
-      setter: "Автор",
-      historyTitle: "Хроника",
-      yourBest: "Ваш рекорд",
-      noBest: "Ещё не пройдено",
-      bestSummary: (mistakes, hints) => `ошибок: ${mistakes}, подсказок: ${hints}`,
-      play: "Играть эту партию",
-      replay: "Переиграть",
-      ariaPage: "Знаменитые партии",
-      ariaCard: (name) => `Партия ${name}`,
-      timeLabel: "за",
-      empty: "—",
-    },
-    auth: {
-      title: "Аккаунт",
-      eyebrow: "sudocore",
-      sceneBadge: "Сетка 9×9 — тот же спокойный ритм, что и в партии",
-      lead: "Войдите или создайте аккаунт, чтобы сохранить прогресс и синхронизировать данные.",
-      signInTab: "Вход",
-      signUpTab: "Регистрация",
-      email: "Email",
-      password: "Пароль",
-      submitSignIn: "Войти",
-      submitSignUp: "Создать аккаунт",
-      footnote: "Аккаунт и прогресс синхронизируются с Supabase.",
-      back: "Вернуться к игре",
-      error: "Не удалось войти. Проверьте email и пароль.",
-      busy: "Подождите…",
-      signUpConfirm: "Аккаунт создан. Подтвердите email, если это требуется в проекте.",
-      needCloud: "Добавьте VITE_SUPABASE_URL и VITE_SUPABASE_PUBLISHABLE_KEY в .env",
-    },
-  },
-  en: {
-    tagline: "daily brain ritual",
-    nav: { rules: "Rules", learn: "Learn", pro: "Upgrade to Pro", signIn: "Sign in", signOut: "Sign out", settings: "Settings", history: "History", famous: "Famous puzzles" },
-    modes: { daily: "Today's ritual", free: "Free training", dailyTitle: "Daily Challenge", freeTitle: "mode" },
-    stats: { time: "time", mistakes: "mistakes", hints: "hints", solved: "solved" },
-    difficulties: { easy: "Easy", medium: "Medium", hard: "Hard", expert: "Master", impossible: "Impossible" },
-    actions: { pencil: "Pencil", erase: "Erase", undo: "Undo", redo: "Redo", newGame: "New game", play: "Play", backToLessons: "Back to lessons", restartLesson: "Restart", apply: "Place number", proofShow: "Show proof", proofHide: "Hide proof", close: "Close" },
-    panels: { daily: "Daily Challenge", filled: (filled) => `${filled} of 81 cells filled`, coach: "AI Coach", mentor: "Mentor", profile: "Profile", leaderboard: "City board", local: "local" },
-    coach: { hint: "Hint", lesson: "Lesson", why: "Why not", empty: "Choose a cell or ask for a hint. I will explain the move without spoiling the whole solution.", mini: "Choose a mode above and Coach will find the next learning step.", dailyReady: "Daily Challenge loaded. Start with cells that have the fewest options.", freeReady: "New training board is ready. Pick a cell and keep a calm rhythm.", proof: "Proof", placed: "Placed the proven number." },
-    lens: { title: "Focus Lens", aria: "Selected cell focus", hide: "Hide Focus Lens", show: "Show Focus Lens", fixed: "given", entered: "entered", empty: "empty", notes: "pencil", number: "number", noCandidates: "no candidates", currentNumber: (value) => `number ${value}`, context: "Fill context", candidates: "Selected cell candidates" },
-    settings: { title: "Settings", eyebrow: "Studio controls", lens: "Focus Lens", lensCopy: "Show the selected-cell panel beside the board.", sound: "Sound", soundCopy: "Soft game feedback plus AI Coach voice.", volume: "Volume", boardSize: "Board size", boardSizeCopy: "Make the puzzle roomier without letting it overtake the screen.", boardCompact: "Compact", boardStandard: "Standard", boardExpanded: "Expanded", theme: "Theme", language: "Language" },
-    history: {
-      title: "Game history",
-      eyebrow: "Your archive",
-      empty: "Finished games appear here. If you start a new game while one is in progress, the old board is saved as unfinished.",
-      sortLabel: "Sort",
-      sortDateNew: "Newest first",
-      sortDateOld: "Oldest first",
-      sortTimeFast: "Fastest time",
-      sortTimeSlow: "Longest time",
-      sortMistakesLow: "Fewest wrong entries",
-      sortMistakesHigh: "Most wrong entries",
-      won: "Won",
-      abandoned: "Unfinished",
-      moves: "Digit entries",
-      mistakes: "Mistakes (counter)",
-      hints: "Hints",
-      time: "Time",
-      replay: "Replay",
-      step: (n, max) => `Step ${n} / ${max}`,
-      openGame: "Review",
-      back: "Back to list",
-      better: "Better:",
-      wrongDigit: "Wrong digit",
-      erased: "Erased",
-      correct: "Correct",
-      noWrongMoves: "No wrong placements vs the solution.",
-      wrongSummary: (n) => `Wrong placements: ${n}`,
-      datePlayed: "Played",
-      outcome: "Outcome",
-      difficulty: "Difficulty",
-      filled: "Filled",
-      clues: "Givens",
-      xp: "XP",
-      previewTitle: "Example: how history will look",
-      previewHint: "This is a demo layout. Your real games show up after you play.",
-      sampleTag: "Sample",
-      stepPrev: "Previous step",
-      stepNext: "Next step",
-      colBoard: "Board",
-      colWhen: "Date",
-      colOutcome: "Result",
-      colMode: "Mode / difficulty",
-      colTime: "Time",
-      colMoves: "Entries",
-      colMistakes: "Mistakes",
-      colHints: "Hints",
-      colFilled: "Filled",
-      colAction: "Action",
-      actionOpen: "Open",
-      actionContinue: "Continue",
-      actionAnalyze: "Analyze",
-      analyzeTitle: "Game analysis",
-      finalBoard: "Final board",
-      showDock: "Show",
-      hideDock: "Hide",
-      emptyCompact: "Your archive appears after the first saved games.",
-      savedCount: (count) => `${count} saved ${count === 1 ? "game" : "games"}`,
-    },
-    modals: {
-      proEyebrow: "sudocore Pro",
-      proTitle: "$2.99 per month",
-      proCopy: "Unlimited games, full AI Coach, deeper stats, and early access to themes.",
-      proTagline: "Train without limits — full coach, history, and themes in one calm upgrade.",
-      proPriceCaption: "Billed monthly · cancel anytime",
-      proFeaturesAria: "What you get with sudocore Pro",
-      proFeatures: [
-        { title: "Unlimited games", detail: "Play as many daily and free boards as you like." },
-        { title: "Full AI Coach", detail: "Hints, lessons, and explanations without cut-down modes." },
-        { title: "Deeper stats", detail: "Rich history and progress signals across sessions." },
-        { title: "Early themes", detail: "New palettes land here before the free tier." },
-      ],
-      proFeatureIncluded: "Included with your membership",
-      proActive: "sudocore Pro is active.",
-      proUntil: (date) => `Until ${date}`,
-      proBillingNote:
-        "Checkout runs on Polar; the Vercel webhook updates your Supabase profile.",
-      proSignIn: "Sign in to subscribe to Pro.",
-      proCtaSignIn: "Sign in to subscribe",
-      polarBusy: "Opening Polar…",
-      polarFail: "Checkout could not start. Deploy to Vercel, set env vars, and try `vercel dev` locally.",
-      proCta: "Subscribe to Pro",
-      rulesTitle: "Sudoku rules",
-      rulesEyebrow: "How to play",
-      rules: [
-        "Fill empty cells with numbers from 1 to 9.",
-        "Each number can appear only once in every row.",
-        "Each number can appear only once in every column.",
-        "Each 3x3 box also contains each number only once.",
-        "Red highlighting shows a conflict. Pencil mode lets you add small notes.",
-        "A win counts only when the whole board is filled and every rule is satisfied.",
-      ],
-      victory: "Victory",
-      solved: "Solved",
-      solvedSubtitle: "Unique solution found",
-    },
-    toasts: { selectCell: "Choose a cell first.", signedOut: "You signed out.", signedIn: "Signed in. Your progress syncs to the cloud.", wrongEntry: "That number does not fit there. The board stayed unchanged.", solved: (xp) => `Solved: +${xp} XP. Great rhythm.`, solvedReplay: "Grid solved — XP for this game was already awarded.", learningXp: (xp) => `Lesson: +${xp} XP for a clean solve.`, learningNoXp: "Lesson cleared — no XP because Coach help was used." },
-    aria: { nav: "Main navigation", game: "Game area", stats: "Game stats", difficulty: "Difficulty selector", board: "9 by 9 Sudoku", numbers: "Number input", tools: "Tools", side: "Progress and coach", coachMode: "AI Coach mode", learnNav: "Learning path", cell: (index, value) => (value ? `Cell ${index + 1}, number ${value}` : `Cell ${index + 1}, empty`) },
-    learning: {
-      eyebrow: "Learning path",
-      title: "Sudoku lessons",
-      lead: "Unlock levels in order. A clean solve — no hints and no Coach “Place” move — earns XP.",
-      tierBeginner: "Beginner",
-      tierPractice: "Practice",
-      tierChallenge: "Challenge",
-      locked: "Finish the previous lesson first.",
-      completed: "Done",
-      cleanBonus: "Clean — XP",
-      cluesShort: (n) => `${n} givens`,
-      homeBack: "Back to game",
-      back: "Back to lessons",
-      ariaPage: "Lesson catalog",
-      ariaCard: (title) => `Lesson: ${title}`,
-      lessonEyebrow: "Lesson",
-    },
-    famous: {
-      eyebrow: "Famous sudoku",
-      title: "Puzzles that made history",
-      lead: "A small museum of the boards newspapers and forums could not stop talking about. Story, your personal best, and a Play button \u2014 the same grid, no random seed.",
-      back: "Back to game",
-      cluesShort: (n) => `${n} clues`,
-      year: "Year",
-      setter: "Setter",
-      historyTitle: "Notable moments",
-      yourBest: "Your best",
-      noBest: "Not yet completed",
-      bestSummary: (mistakes, hints) => `mistakes: ${mistakes}, hints: ${hints}`,
-      play: "Play this puzzle",
-      replay: "Play again",
-      ariaPage: "Famous puzzles",
-      ariaCard: (name) => `Puzzle ${name}`,
-      timeLabel: "in",
-      empty: "\u2014",
-    },
-    auth: {
-      title: "Account",
-      eyebrow: "sudocore",
-      sceneBadge: "9×9 grid — the same calm rhythm as play",
-      lead: "Sign in or sign up to save progress and sync across devices.",
-      signInTab: "Sign in",
-      signUpTab: "Sign up",
-      email: "Email",
-      password: "Password",
-      submitSignIn: "Sign in",
-      submitSignUp: "Create account",
-      footnote: "Your account and saves sync through Supabase.",
-      back: "Back to game",
-      error: "Sign-in failed. Check your email and password.",
-      busy: "Please wait…",
-      signUpConfirm: "Account created. Confirm your email if your project requires it.",
-      needCloud: "Add VITE_SUPABASE_URL and VITE_SUPABASE_PUBLISHABLE_KEY to your .env file.",
-    },
-  },
-  kk: {
-    tagline: "күнделікті логика рәсімі",
-    nav: { rules: "Ереже", learn: "Оқу", pro: "Pro-ға өту", signIn: "Кіру", signOut: "Шығу", settings: "Баптаулар", history: "Тарих", famous: "Атақты тақырыптар" },
-    modes: { daily: "Бүгінгі рәсім", free: "Еркін жаттығу", dailyTitle: "Күндік сынақ", freeTitle: "режим" },
-    stats: { time: "уақыт", mistakes: "қате", hints: "кеңес", solved: "шешілді" },
-    difficulties: { easy: "Жеңіл", medium: "Орташа", hard: "Қиын", expert: "Шебер", impossible: "Мүмкін емес" },
-    actions: { pencil: "Қарындаш", erase: "Өшіру", undo: "Қайтару", redo: "Қайталау", newGame: "Жаңа ойын", play: "Ойнау", backToLessons: "Сабақтарға", restartLesson: "Қайта бастау", apply: "Санды қою", proofShow: "Дәлелді көрсету", proofHide: "Дәлелді жасыру", close: "Жабу" },
-    panels: { daily: "Күндік сынақ", filled: (filled) => `${filled}/81 ұяшық толды`, coach: "AI Coach", mentor: "Тәлімгер", profile: "Профиль", leaderboard: "Қала рейтингі", local: "жергілікті" },
-    coach: { hint: "Кеңес", lesson: "Сабақ", why: "Неге болмайды", empty: "Ұяшық таңдаңыз немесе кеңес сұраңыз. Мен толық шешімді ашпай, жүрісті түсіндіремін.", mini: "Жоғарыдан режим таңдаңыз, Coach келесі оқу қадамын табады.", dailyReady: "Күндік сынақ жүктелді. Ең аз нұсқасы бар ұяшықтардан бастаңыз.", freeReady: "Жаңа жаттығу дайын. Ұяшық таңдап, сабырлы ырғақ ұстаңыз.", proof: "Дәлел", placed: "Дәлелденген сан қойылды." },
-    lens: { title: "Focus Lens", aria: "Таңдалған ұяшық фокусы", hide: "Focus Lens жасыру", show: "Focus Lens көрсету", fixed: "берілген", entered: "енгізілді", empty: "бос", notes: "қарындаш", number: "сан", noCandidates: "үміткер жоқ", currentNumber: (value) => `${value} саны`, context: "Толу контексті", candidates: "Таңдалған ұяшық үміткерлері" },
-    settings: { title: "Баптаулар", eyebrow: "Studio controls", lens: "Focus Lens", lensCopy: "Тақтаның жанында таңдалған ұяшық панелін көрсету.", sound: "Дыбыс", soundCopy: "Жұмсақ ойын әсерлері және AI Coach дауысы.", volume: "Дыбыс", boardSize: "Тақта өлшемі", boardSizeCopy: "Тақтаны сәл үлкейтіңіз, бірақ экранды басып кетпесін.", boardCompact: "Ықшам", boardStandard: "Қалыпты", boardExpanded: "Үлкенірек", theme: "Тақырып", language: "Тіл" },
-    history: {
-      title: "Ойын тарихы",
-      eyebrow: "Партиялар мұрағаты",
-      empty: "Аяқталған партиялар осында пайда болады. Ойын ортасында жаңасын бастасаңыз, ескі тақта «аяқталмаған» ретінде сақталады.",
-      sortLabel: "Сұрыптау",
-      sortDateNew: "Алдымен жаңалары",
-      sortDateOld: "Алдымен ескілері",
-      sortTimeFast: "Уақыт бойынша жылдам",
-      sortTimeSlow: "Уақыт бойынша ұзақ",
-      sortMistakesLow: "Қате енгізулер аз",
-      sortMistakesHigh: "Қате енгізулер көп",
-      won: "Жеңіс",
-      abandoned: "Аяқталмады",
-      moves: "Сан енгізулері",
-      mistakes: "Қателер (есептеу)",
-      hints: "Кеңестер",
-      time: "Уақыт",
-      replay: "Қайталау",
-      step: (n, max) => `Қадам ${n} / ${max}`,
-      openGame: "Талдау",
-      back: "Тізімге оралу",
-      better: "Дұрысы:",
-      wrongDigit: "Қате сан",
-      erased: "Өшірілді",
-      correct: "Дұрыс",
-      noWrongMoves: "Шешіммен салыстырғанда қате енгізулер жоқ.",
-      wrongSummary: (n) => `Қате енгізулер: ${n}`,
-      datePlayed: "Күні",
-      outcome: "Нәтиже",
-      difficulty: "Қиындық",
-      filled: "Толдырылды",
-      clues: "Берілген ұяшық",
-      xp: "XP",
-      previewTitle: "Мысал: тарих осындай көрінеді",
-      previewHint: "Интерфейстің демосы. Шынайы партиялар ойнағаннан кейін пайда болады.",
-      sampleTag: "Мысал",
-      stepPrev: "Алдыңғы қадам",
-      stepNext: "Келесі қадам",
-      colBoard: "Тақта",
-      colWhen: "Күні",
-      colOutcome: "Нәтиже",
-      colMode: "Режим / қиындық",
-      colTime: "Уақыт",
-      colMoves: "Енгізулер",
-      colMistakes: "Қателер",
-      colHints: "Кеңестер",
-      colFilled: "Толдырылды",
-      colAction: "Әрекет",
-      actionOpen: "Ашу",
-      actionContinue: "Жалғастыру",
-      actionAnalyze: "Талдау",
-      analyzeTitle: "Ойын талдауы",
-      finalBoard: "Соңғы қалып",
-      showDock: "Көрсету",
-      hideDock: "Жасыру",
-      emptyCompact: "Мұрағат алғашқы ойындардан кейін көрінеді.",
-      savedCount: (count) => `${count} ойын сақталды`,
-    },
-    modals: {
-      proEyebrow: "sudocore Pro жазылымы",
-      proTitle: "Айына $2.99",
-      proCopy: "Шексіз ойындар, толық AI Coach, терең статистика және тақырыптарға ерте қолжетімділік.",
-      proTagline: "Шектеусіз жаттығыңыз — толық көмекші, тарих пен темалар бір жаңартуда.",
-      proPriceCaption: "Ай сайын · кез келген уақытта бас тартуға болады",
-      proFeaturesAria: "Pro жазылымында не бар",
-      proFeatures: [
-        { title: "Шексіз ойындар", detail: "Күндік сынақ пен еркін жаттығуда қалағанынша ойнаңыз." },
-        { title: "Толық AI Coach", detail: "Кеңестер, сабақтар және түсіндірмелер толық көлемде." },
-        { title: "Терең статистика", detail: "Партиялар тарихы және прогресс толық көрінісі." },
-        { title: "Темаларға ерте қолжетімділік", detail: "Жаңа палитралар тегін нұсқадан бұрын осында." },
-      ],
-      proFeatureIncluded: "Жазылымыңызға кіреді",
-      proActive: "Pro жазылымы белсенді.",
-      proUntil: (date) => `${date} дейін`,
-      proBillingNote:
-        "Төлем Polar арқылы; Vercel вебхукі Supabase профилін жаңартады.",
-      proSignIn: "Pro үшін алдымен аккаунтқа кіріңіз.",
-      proCtaSignIn: "Кіріп, Pro-ға жазылу",
-      polarBusy: "Polar ашылады…",
-      polarFail: "Төлемді бастау сәтсіз. Vercel /api және Polar ортасын тексеріңіз.",
-      proCta: "Pro-ға жазылу",
-      rulesTitle: "Судоку ережелері",
-      rulesEyebrow: "Қалай ойнау керек",
-      rules: [
-        "Бос ұяшықтарды 1-ден 9-ға дейінгі сандармен толтырыңыз.",
-        "Әр қатарда әр сан бір рет қана кездеседі.",
-        "Әр бағанда әр сан бір рет қана кездеседі.",
-        "Әр 3x3 шаршыда да әр сан бір рет қана болады.",
-        "Қызыл белгі қақтығысты көрсетеді. Қарындаш режимі шағын ескертпе қоюға көмектеседі.",
-        "Жеңіс тақта толық толып, барлық ереже орындалғанда ғана есептеледі.",
-      ],
-      victory: "Жеңіс",
-      solved: "Шешілді",
-      solvedSubtitle: "Бірегей шешім табылды",
-    },
-    toasts: { selectCell: "Алдымен ұяшық таңдаңыз.", signedOut: "Шықтыңыз.", signedIn: "Кірдіңіз. Прогресс бұлтта сақталады.", wrongEntry: "Бұл сан бұл жерге келмейді. Тақта өзгеріссіз қалды.", solved: (xp) => `Шешілді: +${xp} XP. Керемет ырғақ.`, solvedReplay: "Тор шешілген — осы ойын үшін XP қосылған.", learningXp: (xp) => `Сабақ: таза шешу үшін +${xp} XP.`, learningNoXp: "Сабақ аяқталды — Coach көмегі болғандықтан XP жоқ." },
-    aria: { nav: "Негізгі навигация", game: "Ойын аймағы", stats: "Ойын статистикасы", difficulty: "Қиындық таңдау", board: "9 да 9 судоку", numbers: "Сан енгізу", tools: "Құралдар", side: "Прогресс және көмекші", coachMode: "AI Coach режимі", learnNav: "Оқу жолы", cell: (index, value) => (value ? `${index + 1}-ұяшық, ${value} саны` : `${index + 1}-ұяшық, бос`) },
-    learning: {
-      eyebrow: "Оқу жолы",
-      title: "Судоку сабақтары",
-      lead: "Деңгейлерді ретімен ашыңыз. Таза шешу — кеңессіз және Coach «Қою» жүрісіз — XP береді.",
-      tierBeginner: "Бастапқы",
-      tierPractice: "Жаттығу",
-      tierChallenge: "Сынақ",
-      locked: "Алдымен алдыңғы сабақты аяқтаңыз.",
-      completed: "Аяқталды",
-      cleanBonus: "Таза — XP",
-      cluesShort: (n) => `${n} берілді`,
-      homeBack: "Ойынға оралу",
-      back: "Сабақтарға оралу",
-      ariaPage: "Сабақтар каталогы",
-      ariaCard: (title) => `Сабақ: ${title}`,
-      lessonEyebrow: "Сабақ",
-    },
-    famous: {
-      eyebrow: "Атақты судоку",
-      title: "Тарихқа енген тақырыптар",
-      lead: "Газеттер мен форумдар тоқтаусыз талқылаған торлардың шағын мұражайы. Тарихи хроника, жеке рекордыңыз және «Ойнау» түймесі — кездейсоқ емес, нақ сол тор.",
-      back: "Ойынға оралу",
-      cluesShort: (n) => `${n} кеңес`,
-      year: "Жыл",
-      setter: "Авторы",
-      historyTitle: "Хроника",
-      yourBest: "Жеке рекорд",
-      noBest: "Әлі шешілмеген",
-      bestSummary: (mistakes, hints) => `қателер: ${mistakes}, кеңестер: ${hints}`,
-      play: "Осы тақырыпты ойнау",
-      replay: "Қайта ойнау",
-      ariaPage: "Атақты тақырыптар",
-      ariaCard: (name) => `${name} тақырыбы`,
-      timeLabel: "·",
-      empty: "—",
-    },
-    auth: {
-      title: "Аккаунт",
-      eyebrow: "sudocore",
-      sceneBadge: "9×9 тор — ойындағыдай тыныш ырғақ",
-      lead: "Кіріңіз немесе тіркеліңіз — прогресті сақтау және деректерді синхрондау үшін.",
-      signInTab: "Кіру",
-      signUpTab: "Тіркелу",
-      email: "Email",
-      password: "Құпия сөз",
-      submitSignIn: "Кіру",
-      submitSignUp: "Аккаунт жасау",
-      footnote: "Аккаунт пен прогресс Supabase арқылы синхрондалады.",
-      back: "Ойынға оралу",
-      error: "Кіру сәтсіз. Email мен құпия сөзді тексеріңіз.",
-      busy: "Күте тұрыңыз…",
-      signUpConfirm: "Аккаунт жасалды. Жоба қажет етсе, email растаңыз.",
-      needCloud: ".env файлына VITE_SUPABASE_URL және VITE_SUPABASE_PUBLISHABLE_KEY қосыңыз.",
-    },
-  },
-};
-
-const LEVELS = [
-  { name: "Новичок", min: 0 },
-  { name: "Тактик", min: 120 },
-  { name: "Мастер", min: 360 },
-  { name: "Легенда", min: 760 },
-  { name: "Гроссмейстер", min: 1300 },
-];
-
-const DEMO_LEADERS = [
-  { name: "Aruzhan", city: "Алматы", seconds: 212 },
-  { name: "Timur", city: "Алматы", seconds: 248 },
-  { name: "Dana", city: "Алматы", seconds: 302 },
-  { name: "Miras", city: "Алматы", seconds: 391 },
-];
-
-const EMPTY_PROFILE = {
-  name: "Гость",
-  xp: 0,
-  streak: 0,
-  lastPlayed: null,
-  solved: 0,
-  badges: [],
-  dailyResults: {},
-  famousBests: {},
-  subscriptionTier: "free",
-  proExpiresAt: null,
-};
-
-function loadGame() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const saved = JSON.parse(raw);
-    if (saved.rulesVersion !== GAME_RULES_VERSION) return null;
-    if (!saved.generator?.unique) return null;
-    if (!Array.isArray(saved.values) || saved.values.length !== 81) return null;
-    if (!Array.isArray(saved.puzzle) || saved.puzzle.length !== 81) return null;
-    if (!Array.isArray(saved.solution) || saved.solution.length !== 81) return null;
-    const fixed =
-      Array.isArray(saved.fixed) && saved.fixed.length === 81 ? saved.fixed : saved.puzzle.map(Boolean);
-    let clueOk = true;
-    for (let i = 0; i < 81; i += 1) {
-      if (saved.puzzle[i] && saved.puzzle[i] !== saved.solution?.[i]) {
-        clueOk = false;
-        break;
-      }
-    }
-    if (!clueOk) return null;
-
-    const sanitized = sanitizeEditableValues(saved.values, fixed, saved.solution);
-    const repaired = new Set(sanitized.repairedIndices);
-    const notes = normalizeNotes(saved.notes).map((note, index) => (repaired.has(index) ? [] : note));
-
-    return {
-      ...saved,
-      fixed,
-      values: sanitized.values,
-      selected: normalizeSelection(saved.selected, sanitized.values, fixed),
-      startedAt: Date.now(),
-      notes,
-      hintCells: saved.hintCells || [],
-      history: saved.history || [],
-      future: saved.future || [],
-      awardXp: saved.awardXp || 0,
-      suppressVictoryRewards: Boolean(saved.suppressVictoryRewards),
-      learningLevelId: saved.learningLevelId,
-      learningCleanEligible:
-        saved.mode === "learning" ? saved.learningCleanEligible !== false : saved.learningCleanEligible,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function loadProfile() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) || "{}");
-    const merged = { ...EMPTY_PROFILE, ...saved };
-    if (!merged.famousBests || typeof merged.famousBests !== "object") {
-      merged.famousBests = {};
-    }
-    const localBests = loadFamousBests();
-    if (localBests && Object.keys(localBests).length) {
-      merged.famousBests = { ...localBests, ...merged.famousBests };
-      for (const [id, entry] of Object.entries(localBests)) {
-        const cur = merged.famousBests[id];
-        if (!cur || (entry?.seconds != null && entry.seconds < cur.seconds)) {
-          merged.famousBests[id] = entry;
-        }
-      }
-    }
-    return merged;
-  } catch {
-    return EMPTY_PROFILE;
-  }
-}
-
-function loadPreferences() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
-    return normalizePreferences(saved);
-  } catch {
-    return DEFAULT_PREFS;
-  }
-}
-
-function normalizePreferences(preferences = {}) {
-  return {
-    ...DEFAULT_PREFS,
-    ...preferences,
-    soundVolume: clampVolume(preferences.soundVolume ?? DEFAULT_PREFS.soundVolume),
-    boardSize: BOARD_SIZES.some((size) => size.key === preferences.boardSize)
-      ? preferences.boardSize
-      : DEFAULT_PREFS.boardSize,
-    theme: THEMES.some((theme) => theme.key === preferences.theme) ? preferences.theme : DEFAULT_PREFS.theme,
-    language: TRANSLATIONS[preferences.language] ? preferences.language : DEFAULT_PREFS.language,
-  };
-}
-
-function clampVolume(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return DEFAULT_PREFS.soundVolume;
-  return Math.max(0, Math.min(1, number));
-}
-
-function getElapsed(game, now = Date.now()) {
-  if (game.completed) return game.elapsedBefore;
-  return game.elapsedBefore + Math.floor((now - game.startedAt) / 1000);
-}
-
-function saveGame(game) {
-  const data = {
-    ...game,
-    elapsedBefore: getElapsed(game),
-    startedAt: Date.now(),
-  };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
-
-function getLevel(xp) {
-  return LEVELS.reduce((current, level) => (xp >= level.min ? level : current), LEVELS[0]);
-}
-
-function getNextLevel(xp) {
-  return LEVELS.find((level) => level.min > xp) || LEVELS[LEVELS.length - 1];
-}
-
-function makeSnapshot(game) {
-  const snap = {
-    values: [...game.values],
-    notes: game.notes.map((note) => [...note]),
-    mistakes: game.mistakes,
-    hintsUsed: game.hintsUsed,
-    lastNumber: game.lastNumber,
-    hintCells: [...game.hintCells],
-  };
-  if (game.mode === "learning") {
-    snap.learningCleanEligible = game.learningCleanEligible !== false;
-  }
-  return snap;
-}
-
-function restoreSnapshot(game, snapshot) {
-  return {
-    ...game,
-    values: [...snapshot.values],
-    notes: snapshot.notes.map((note) => [...note]),
-    mistakes: snapshot.mistakes,
-    hintsUsed: snapshot.hintsUsed,
-    lastNumber: snapshot.lastNumber,
-    hintCells: [...snapshot.hintCells],
-    learningCleanEligible:
-      snapshot.learningCleanEligible !== undefined
-        ? snapshot.learningCleanEligible
-        : game.learningCleanEligible,
-  };
-}
-
-function withHistory(game) {
-  return {
-    ...game,
-    history: [...game.history.slice(-119), makeSnapshot(game)],
-    future: [],
-  };
-}
-
-function parseAppRoute() {
-  let path = window.location.hash.slice(1) || "/";
-  if (!path.startsWith("/")) {
-    path = `/${path}`;
-  }
-  path = path.replace(/\/{2,}/g, "/");
-  if (path.length > 1 && path.endsWith("/")) {
-    path = path.slice(0, -1);
-  }
-  if (path === "/sign-in") return { kind: "sign-in", lessonId: null };
-  if (path === "/famous") return { kind: "famous", lessonId: null };
-  if (path === "/learn") return { kind: "learn", lessonId: null };
-  if (path.startsWith("/learn/")) {
-    const rest = path.slice("/learn/".length);
-    if (rest) return { kind: "learn", lessonId: decodeURIComponent(rest) };
-  }
-  return { kind: "home", lessonId: null };
-}
 
 /** Classic 9×9 opening — decoration only (not an active puzzle). */
 const AUTH_DECOR_GRID = [
@@ -951,6 +141,17 @@ function Brand({ tagline }) {
     </a>
   );
 }
+
+const LANDING_FEATURE_ICONS = {
+  coach: Sparkles,
+  learn: BookOpen,
+  daily: CalendarDays,
+  famous: Trophy,
+  leaderboard: BarChart3,
+  sync: RefreshCw,
+  collaboration: Share2,
+  pro: Crown,
+};
 
 function AuthMiniSudoku() {
   return (
@@ -982,10 +183,111 @@ function AuthMiniSudoku() {
   );
 }
 
-function AuthPage({ labels, brandTagline, navAria, onBack, cloudAvailable, onSignedIn }) {
+const LANDING_DEMO_GRID = [
+  5, 3, 0, 0, 7, 0, 0, 0, 0,
+  6, 0, 0, 1, 9, 5, 0, 0, 0,
+  0, 9, 8, 0, 0, 0, 0, 6, 0,
+  8, 0, 0, 0, 6, 0, 0, 0, 3,
+  4, 0, 0, 8, 0, 3, 0, 0, 1,
+  7, 0, 0, 0, 2, 0, 0, 0, 6,
+  0, 6, 0, 0, 0, 0, 2, 8, 0,
+  0, 0, 0, 4, 1, 9, 0, 0, 5,
+  0, 0, 0, 0, 8, 0, 0, 7, 9,
+];
+
+const LANDING_DEMO_MOVES = [
+  { index: 2, value: 4, player: "Mira", color: "#137466" },
+  { index: 10, value: 7, player: "Timur", color: "#4659b7" },
+  { index: 40, value: 5, player: "Aruzhan", color: "#b87922" },
+  { index: 62, value: 4, player: "Mira", color: "#137466" },
+];
+
+function LandingLiveSudoku({ labels, onPlay }) {
+  const [step, setStep] = useState(0);
+  const visibleMoves = LANDING_DEMO_MOVES.slice(0, step + 1);
+  const activeMove = LANDING_DEMO_MOVES[step];
+  const valueByIndex = new Map(visibleMoves.map((move) => [move.index, move.value]));
+  const activeRow = Math.floor(activeMove.index / 9);
+  const activeCol = activeMove.index % 9;
+  const nextStep = () => setStep((current) => (current + 1) % LANDING_DEMO_MOVES.length);
+
+  useEffect(() => {
+    const timer = window.setInterval(nextStep, 1800);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="landing-live-demo">
+      <button className="landing-live-board" type="button" aria-label={labels.boardAria} onClick={nextStep}>
+        {LANDING_DEMO_GRID.map((given, index) => {
+          const row = Math.floor(index / 9);
+          const col = index % 9;
+          const played = valueByIndex.get(index);
+          const active = index === activeMove.index;
+          const peer =
+            row === activeRow ||
+            col === activeCol ||
+            (Math.floor(row / 3) === Math.floor(activeRow / 3) &&
+              Math.floor(col / 3) === Math.floor(activeCol / 3));
+          return (
+            <span
+              key={index}
+              className={[
+                "landing-live-cell",
+                given ? "is-given" : "",
+                played ? "is-played" : "",
+                peer ? "is-peer" : "",
+                active ? "is-active" : "",
+                col === 2 || col === 5 ? "is-box-right" : "",
+                row === 2 || row === 5 ? "is-box-bottom" : "",
+              ]
+                .filter(Boolean)
+                .join(" ")}
+            >
+              {given || played || <i />}
+            </span>
+          );
+        })}
+        <span
+          className="landing-remote-cursor landing-remote-cursor--one"
+          style={{ "--cursor-color": LANDING_DEMO_MOVES[(step + 1) % LANDING_DEMO_MOVES.length].color }}
+        >
+          {LANDING_DEMO_MOVES[(step + 1) % LANDING_DEMO_MOVES.length].player}
+        </span>
+        <span
+          className="landing-remote-cursor landing-remote-cursor--two"
+          style={{ "--cursor-color": LANDING_DEMO_MOVES[(step + 2) % LANDING_DEMO_MOVES.length].color }}
+        >
+          {LANDING_DEMO_MOVES[(step + 2) % LANDING_DEMO_MOVES.length].player}
+        </span>
+      </button>
+      <div className="landing-friends-note">
+        <span>
+          <Share2 size={17} aria-hidden="true" />
+          {labels.previewBadge}
+        </span>
+        <p>{labels.previewText}</p>
+        <div className="landing-friends-row" aria-label={labels.playersAria}>
+          {labels.players.map((player) => (
+            <strong key={player}>{player.slice(0, 1)}</strong>
+          ))}
+          <small>{labels.liveStatus(activeMove.player, activeMove.value)}</small>
+        </div>
+        <button type="button" onClick={onPlay}>
+          {labels.previewCta}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AuthPage({ labels, brandTagline, navAria, onBack, onComplete = onBack, cloudAvailable, onSignedIn }) {
   const [mode, setMode] = useState("signin");
+  const [country, setCountry] = useState(DEFAULT_COUNTRY);
+  const [city, setCity] = useState(DEFAULT_CITY);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const cityOptions = CITY_OPTIONS.filter((option) => option.country === country);
 
   async function handleSubmit(event) {
     event.preventDefault();
@@ -997,7 +299,14 @@ function AuthPage({ labels, brandTagline, navAria, onBack, cloudAvailable, onSig
     const form = event.currentTarget;
     const email = String(form.email?.value || "").trim();
     const password = String(form.password?.value || "");
+    const nickname = String(form.nickname?.value || "").trim();
+    const selectedCountry = String(form.country?.value || DEFAULT_COUNTRY).trim();
+    const selectedCity = String(form.city?.value || DEFAULT_CITY).trim();
     if (!email || !password) {
+      setError(labels.error);
+      return;
+    }
+    if (mode === "signup" && !nickname) {
       setError(labels.error);
       return;
     }
@@ -1007,13 +316,23 @@ function AuthPage({ labels, brandTagline, navAria, onBack, cloudAvailable, onSig
         const { error: signErr } = await supabase.auth.signInWithPassword({ email, password });
         if (signErr) throw signErr;
         onSignedIn?.();
-        onBack();
+        onComplete?.();
       } else {
-        const { data, error: signErr } = await supabase.auth.signUp({ email, password });
+        const { data, error: signErr } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              nickname,
+              city: selectedCity,
+              country: selectedCountry,
+            },
+          },
+        });
         if (signErr) throw signErr;
         if (data.session) {
           onSignedIn?.();
-          onBack();
+          onComplete?.();
         } else {
           onSignedIn?.(labels.signUpConfirm);
         }
@@ -1093,6 +412,52 @@ function AuthPage({ labels, brandTagline, navAria, onBack, cloudAvailable, onSig
                     disabled={busy}
                   />
                 </label>
+                {mode === "signup" ? (
+                  <>
+                    <label className="auth-field">
+                      <span>{labels.nickname}</span>
+                      <input
+                        name="nickname"
+                        type="text"
+                        autoComplete="nickname"
+                        placeholder="Aruzhan"
+                        minLength={2}
+                        maxLength={32}
+                        disabled={busy}
+                        required
+                      />
+                    </label>
+                    <label className="auth-field">
+                      <span>{labels.country}</span>
+                      <select
+                        name="country"
+                        value={country}
+                        onChange={(event) => {
+                          const nextCountry = event.target.value;
+                          setCountry(nextCountry);
+                          setCity(CITY_OPTIONS.find((option) => option.country === nextCountry)?.city || DEFAULT_CITY);
+                        }}
+                        disabled={busy}
+                      >
+                        {COUNTRY_OPTIONS.map((option) => (
+                          <option key={option} value={option}>
+                            {option}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="auth-field">
+                      <span>{labels.city}</span>
+                      <select name="city" value={city} onChange={(event) => setCity(event.target.value)} disabled={busy}>
+                        {cityOptions.map((option) => (
+                          <option key={`${option.country}-${option.city}`} value={option.city}>
+                            {option.city}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
+                ) : null}
                 {error ? (
                   <p className="auth-error" role="alert">
                     {error}
@@ -1111,7 +476,153 @@ function AuthPage({ labels, brandTagline, navAria, onBack, cloudAvailable, onSig
   );
 }
 
-export function createInitialGame(route = { kind: "home", lessonId: null }, loaded = null) {
+function LandingPage({
+  labels,
+  navLabels,
+  authLabel,
+  brandTagline,
+  navAria,
+  language,
+  languageOptions,
+  onLanguageChange,
+  onPlay,
+  onLearn,
+  onFamous,
+  onSignIn,
+}) {
+  return (
+    <>
+      <header className="topbar landing-topbar" aria-label={navAria}>
+        <Brand tagline={brandTagline} />
+        <div className="landing-nav-actions">
+          <select
+            className="landing-language-select"
+            aria-label={labels.languageLabel}
+            value={language}
+            onChange={(event) => onLanguageChange(event.target.value)}
+          >
+            {Object.entries(languageOptions).map(([key, meta]) => (
+              <option key={key} value={key}>
+                {meta.label}
+              </option>
+            ))}
+          </select>
+          <button className="mini-button icon-button" type="button" onClick={onLearn}>
+            <BookOpen size={17} aria-hidden="true" />
+            {navLabels.learn}
+          </button>
+          <button className="mini-button icon-button" type="button" onClick={onSignIn}>
+            <LogIn size={17} aria-hidden="true" />
+            {authLabel}
+          </button>
+        </div>
+      </header>
+
+      <main className="landing-page">
+        <section className="landing-hero">
+          <div className="landing-hero-copy">
+            <p className="eyebrow">{labels.eyebrow}</p>
+            <h1>{labels.title}</h1>
+            <p className="landing-lead">{labels.lead}</p>
+            <div className="landing-cta-row">
+              <button className="landing-primary-cta" type="button" onClick={onPlay}>
+                <Play size={18} aria-hidden="true" />
+                {labels.primaryCta}
+              </button>
+              <button className="landing-secondary-cta" type="button" onClick={onLearn}>
+                <BookOpen size={18} aria-hidden="true" />
+                {labels.secondaryCta}
+              </button>
+            </div>
+            <div className="landing-proof-strip" aria-label={labels.statsAria}>
+              {labels.stats.map((item) => (
+                <span key={item.label}>
+                  <strong>{item.value}</strong>
+                  <small>{item.label}</small>
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="landing-preview" aria-label={labels.previewAria}>
+            <LandingLiveSudoku labels={labels} onPlay={onPlay} />
+          </div>
+        </section>
+
+        <section className="landing-feature-band" aria-label={labels.featuresAria}>
+          {labels.features.map((feature) => {
+            const Icon = LANDING_FEATURE_ICONS[feature.icon] || Sparkles;
+            return (
+              <article className="landing-feature" key={feature.title}>
+                <span className="landing-feature-icon" aria-hidden="true">
+                  <Icon size={19} />
+                </span>
+                <h2>{feature.title}</h2>
+                <p>{feature.detail}</p>
+              </article>
+            );
+          })}
+        </section>
+
+        <section className="landing-quote" aria-label={labels.quoteAria}>
+          <div className="landing-quote-copy">
+            <p className="eyebrow">{labels.quoteEyebrow}</p>
+            <blockquote>{labels.quoteText}</blockquote>
+            <div className="landing-quote-person">
+              <strong>{labels.quoteName}</strong>
+              <span>{labels.quoteRole}</span>
+            </div>
+            <p className="landing-quote-note">{labels.quoteNote}</p>
+          </div>
+          <figure className="landing-quote-figure">
+            <img src="/maki-kaji-sudoku.jpg" alt={labels.quoteImageAlt} />
+            <figcaption>
+              <a href="https://commons.wikimedia.org/wiki/File:Maki_Kaji_(5607045477).jpg" target="_blank" rel="noreferrer">
+                {labels.quoteCredit}
+              </a>
+            </figcaption>
+          </figure>
+        </section>
+
+        <section className="landing-flow">
+          <div>
+            <p className="eyebrow">{labels.flowEyebrow}</p>
+            <h2>{labels.flowTitle}</h2>
+          </div>
+          <div className="landing-flow-steps">
+            {labels.flowSteps.map((step, index) => (
+              <article key={step.title}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <h3>{step.title}</h3>
+                <p>{step.detail}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section className="landing-final">
+          <div>
+            <p className="eyebrow">{labels.finalEyebrow}</p>
+            <h2>{labels.finalTitle}</h2>
+            <p>{labels.finalLead}</p>
+          </div>
+          <div className="landing-cta-row">
+            <button className="landing-primary-cta" type="button" onClick={onPlay}>
+              <Play size={18} aria-hidden="true" />
+              {labels.primaryCta}
+            </button>
+            <button className="landing-secondary-cta" type="button" onClick={onFamous}>
+              <Trophy size={18} aria-hidden="true" />
+              {labels.famousCta}
+            </button>
+          </div>
+        </section>
+      </main>
+    </>
+  );
+}
+
+export function createInitialGame(route = { kind: "play", lessonId: null }, loaded = null) {
   if (route.kind === "learn" && route.lessonId) {
     const def = getLearningLevelById(route.lessonId);
     if (def) return createGame(def.difficulty, "learning", { learningLevelId: route.lessonId });
@@ -1121,15 +632,17 @@ export function createInitialGame(route = { kind: "home", lessonId: null }, load
 }
 
 function App() {
-  const [game, setGame] = useState(() => createInitialGame(parseAppRoute(), loadGame()));
+  const { game, setGame, dispatchGame } = useSudokuGame(() => createInitialGame(parseAppRoute(), loadGame()));
   const [profile, setProfile] = useState(loadProfile);
   const [preferences, setPreferences] = useState(loadPreferences);
   const [coachMessage, setCoachMessageState] = useState(null);
   const [coachMode, setCoachMode] = useState("hint");
   const [coachStep, setCoachStep] = useState(null);
+  const [speechVoices, setSpeechVoices] = useState([]);
   const [proofVisible, setProofVisible] = useState(false);
   const [toast, setToast] = useState("");
   const [activeModal, setActiveModal] = useState(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [historyRecords, setHistoryRecords] = useState(() => loadArchive());
   const [historySort, setHistorySort] = useState("dateNew");
   const [historyDockOpen, setHistoryDockOpen] = useState(false);
@@ -1140,9 +653,8 @@ function App() {
   const gameRef = useRef(game);
   gameRef.current = game;
   const keyboardRef = useRef(null);
-  const [authUser, setAuthUser] = useState(null);
-  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
-  const [cloudSynced, setCloudSynced] = useState(false);
+  const collaborationRewardRef = useRef(null);
+  const { authUser, authReady, signOut } = useAuthSession();
   const [proBusy, setProBusy] = useState(false);
 
   const t = TRANSLATIONS[preferences.language] || TRANSLATIONS.ru;
@@ -1168,6 +680,22 @@ function App() {
   const focusLens = useMemo(() => createFocusLens(game), [game]);
   const level = getLevel(profile.xp);
   const nextLevel = getNextLevel(profile.xp);
+  const todayKey = getDateKey();
+  const { cloudSynced, setCloudSynced } = useCloudSync({
+    authUser,
+    game,
+    setGame,
+    profile,
+    setProfile,
+    preferences,
+    setPreferences,
+    setHistoryRecords,
+  });
+  const { dailyLeaderboard, refreshDailyLeaderboard } = useDailyLeaderboard({
+    dateKey: todayKey,
+    city: profile.city || DEFAULT_CITY,
+    cloudSynced,
+  });
   const xpSpan = Math.max(1, nextLevel.min - level.min);
   const xpProgress =
     nextLevel.name === level.name ? 100 : Math.max(0, Math.min(100, ((profile.xp - level.min) / xpSpan) * 100));
@@ -1178,28 +706,70 @@ function App() {
   );
 
   const leaderboard = useMemo(() => {
-    const leaders = [...DEMO_LEADERS];
-    const dailyTime = profile.dailyResults?.[getDateKey()];
+    const leaders = dailyLeaderboard.map((entry) => ({
+      id: `${entry.user_id}-${entry.date_key}`,
+      name: entry.nickname,
+      city: entry.country ? `${entry.city}, ${entry.country}` : entry.city,
+      seconds: entry.seconds,
+    }));
+    const dailyTime = profile.dailyResults?.[todayKey];
     if (dailyTime) {
-      leaders.push({
+      const ownName = authUser ? profile.name : "Вы";
+      const ownCity = `${profile.city || DEFAULT_CITY}, ${profile.country || DEFAULT_COUNTRY}`;
+      const alreadyListed = leaders.some((leader) => leader.name === ownName && leader.seconds === dailyTime);
+      if (!alreadyListed) leaders.push({
+        id: "local-daily",
         name: authUser ? profile.name : "Вы",
-        city: "Алматы",
+        city: ownCity,
         seconds: dailyTime,
       });
     }
     return leaders.sort((a, b) => a.seconds - b.seconds).slice(0, 5);
-  }, [profile, authUser]);
+  }, [dailyLeaderboard, profile, authUser, todayKey]);
 
-  const isPro = computeProStatus(profile.subscriptionTier, profile.proExpiresAt);
+  const isPro = isProfilePro(profile);
+  const isCollaborationRoute = hashRoute.kind === "collab" && Boolean(hashRoute.roomId);
+  const collaborationLabels = t.collaboration || TRANSLATIONS.en.collaboration;
+  const collaboration = useCollaborationRoom({
+    roomId: isCollaborationRoute ? hashRoute.roomId : null,
+    authUser,
+    profile,
+    game,
+    setGame,
+    preferences,
+    onToast: showToast,
+    labels: collaborationLabels,
+  });
 
   useEffect(() => {
-    localStorage.setItem(PROFILE_KEY, JSON.stringify(profile));
+    if (!collaboration.enabled) return;
+    const ready = collaboration.pendingProposals.find((proposal) => {
+      const summary = collaboration.voteSummary(proposal);
+      return summary.approvalCount >= summary.threshold;
+    });
+    if (ready) void collaboration.approveProposal(ready);
+  }, [collaboration.enabled, collaboration.pendingProposals, collaboration.voteSummary, collaboration.approveProposal]);
+
+  useEffect(() => {
+    if (!collaboration.enabled || !collaboration.isHost || collaboration.room?.status !== "solved" || !game.completed) return;
+    const key = `${collaboration.room.id}:${collaboration.room.boardVersion}`;
+    if (collaborationRewardRef.current === key) return;
+    collaborationRewardRef.current = key;
+    completePuzzle(game);
+  }, [collaboration.enabled, collaboration.isHost, collaboration.room?.status, collaboration.room?.id, collaboration.room?.boardVersion, game.completed]);
+
+  useEffect(() => {
+    if (!isPro && isThemePro(preferences.theme)) {
+      setPreferences((current) => ({ ...current, theme: "studio" }));
+    }
+  }, [isPro, preferences.theme]);
+
+  useEffect(() => {
+    saveProfile(profile);
   }, [profile]);
 
   useEffect(() => {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(preferences));
-    document.documentElement.dataset.theme = preferences.theme;
-    document.documentElement.lang = preferences.language;
+    savePreferences(preferences);
   }, [preferences]);
 
   useEffect(() => {
@@ -1226,104 +796,6 @@ function App() {
     setProofVisible(false);
     setCoachMessageState(null);
   }, [hashRoute.kind, hashRoute.lessonId, authUser?.id]);
-
-  useEffect(() => {
-    if (!supabase) return undefined;
-    let cancelled = false;
-    supabase.auth
-      .getSession()
-      .then(async ({ data: { session }, error }) => {
-        if (error) {
-          console.warn("Supabase session restore failed; clearing local auth state.", error);
-          await supabase.auth.signOut();
-        }
-        if (!cancelled) {
-          setAuthUser(session?.user ?? null);
-          setAuthReady(true);
-        }
-      })
-      .catch((error) => {
-        console.warn("Supabase session bootstrap failed.", error);
-        if (!cancelled) {
-          setAuthUser(null);
-          setAuthReady(true);
-        }
-      });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAuthUser(session?.user ?? null);
-    });
-    return () => {
-      cancelled = true;
-      sub.subscription.unsubscribe();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!supabase || !authUser?.id) {
-      setCloudSynced(false);
-      return undefined;
-    }
-    let cancelled = false;
-    setCloudSynced(false);
-    (async () => {
-      try {
-        const { data: row, error } = await supabase.from("profiles").select("*").eq("id", authUser.id).maybeSingle();
-        if (error) throw error;
-        if (cancelled) return;
-
-        const remoteProfile = mapProfileFromDb(row, authUser.email);
-        const localProfile = loadProfile();
-        const mergedProfile = mergeProfileForSync(localProfile, remoteProfile);
-        setProfile(mergedProfile);
-
-        const mergedPrefs = mergePreferencesWithRemote(loadPreferences(), row?.preferences || {});
-        setPreferences(normalizePreferences(mergedPrefs));
-
-        const localHist = loadArchive();
-        const remoteRows = await fetchRemoteHistory(supabase, authUser.id);
-        const mergedHist = mergeHistoryFromRemote(localHist, remoteRows);
-        saveArchive(mergedHist);
-        setHistoryRecords(mergedHist);
-        await upsertHistoryRecords(supabase, authUser.id, mergedHist);
-
-        const cloudGame = hydrateGameFromCloud(row?.current_game);
-        if (cloudGame) {
-          setGame((g) => (gameHasProgress(g) ? g : cloudGame));
-        }
-
-        await supabase.from("profiles").upsert(profileToRemotePatch(mergedProfile, mergedPrefs, authUser.id), {
-          onConflict: "id",
-        });
-      } catch (e) {
-        console.error(e);
-      } finally {
-        if (!cancelled) setCloudSynced(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [authUser?.id]);
-
-  useEffect(() => {
-    if (!supabase || !authUser?.id || !cloudSynced) return undefined;
-    const timer = window.setTimeout(() => {
-      void supabase.from("profiles").upsert(profileToRemotePatch(profile, preferences, authUser.id), {
-        onConflict: "id",
-      });
-    }, 1600);
-    return () => window.clearTimeout(timer);
-  }, [profile, preferences, authUser?.id, cloudSynced]);
-
-  useEffect(() => {
-    if (!supabase || !authUser?.id || !cloudSynced) return undefined;
-    const timer = window.setTimeout(() => {
-      const elapsedFlush = getElapsed(game, Date.now());
-      const payloadFlush = gameToCloudBlob(game, elapsedFlush);
-      void supabase.from("profiles").update({ current_game: payloadFlush }).eq("id", authUser.id);
-    }, 2200);
-    return () => window.clearTimeout(timer);
-  }, [game, authUser?.id, cloudSynced]);
 
   useEffect(() => {
     setCoachMessageState(null);
@@ -1357,12 +829,18 @@ function App() {
     if (!("speechSynthesis" in window)) return undefined;
     const synth = window.speechSynthesis;
     const prime = () => {
-      synth.getVoices();
+      setSpeechVoices(synth.getVoices());
     };
     prime();
     synth.addEventListener("voiceschanged", prime);
     return () => synth.removeEventListener("voiceschanged", prime);
   }, []);
+
+  useEffect(() => {
+    if (!preferences.coachVoiceEnabled && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
+  }, [preferences.coachVoiceEnabled]);
 
   useEffect(() => {
     function handleKeyboard(event) {
@@ -1399,7 +877,7 @@ function App() {
       }
 
       if (key === "n") {
-        k.setGame((current) => ({ ...current, noteMode: !current.noteMode }));
+        k.dispatchGame({ type: GAME_ACTIONS.TOGGLE_NOTE_MODE });
         return;
       }
 
@@ -1416,17 +894,72 @@ function App() {
     setToast(message);
   }
 
+  function currentRouteForReturn() {
+    const current = window.location.hash || ROUTES.landing;
+    return parseAppRoute(current).kind === "sign-in" ? ROUTES.landing : current;
+  }
+
+  function readAuthReturnRoute() {
+    try {
+      const saved = window.sessionStorage?.getItem(AUTH_RETURN_KEY);
+      if (saved && parseAppRoute(saved).kind !== "sign-in") return saved;
+    } catch {
+      // Session storage can be unavailable in some embedded browser contexts.
+    }
+    return ROUTES.landing;
+  }
+
+  function clearAuthReturnRoute() {
+    try {
+      window.sessionStorage?.removeItem(AUTH_RETURN_KEY);
+    } catch {
+      // Ignore storage failures; routing can still fall back to home.
+    }
+  }
+
+  function clearPostAuthAction() {
+    try {
+      window.sessionStorage?.removeItem(POST_AUTH_ACTION_KEY);
+    } catch {
+      // Ignore storage failures; there may be no pending post-auth action.
+    }
+  }
+
+  function requestSignIn({ returnTo = currentRouteForReturn(), postAuthAction = "" } = {}) {
+    try {
+      if (returnTo && parseAppRoute(returnTo).kind !== "sign-in") {
+        window.sessionStorage?.setItem(AUTH_RETURN_KEY, returnTo);
+      }
+      if (postAuthAction) {
+        window.sessionStorage?.setItem(POST_AUTH_ACTION_KEY, postAuthAction);
+      }
+    } catch {
+      // Navigation still works even if storage is blocked.
+    }
+    navigateTo(ROUTES.signIn);
+  }
+
   function playFeedback(kind) {
     if (!preferences.soundEnabled) return;
     playGameSound(kind, preferences.soundVolume);
   }
 
   function speakCoach(message) {
-    if (!preferences.soundEnabled || preferences.soundVolume <= 0 || !("speechSynthesis" in window)) return;
+    if (
+      !preferences.coachVoiceEnabled ||
+      preferences.soundVolume <= 0 ||
+      !("speechSynthesis" in window)
+    ) {
+      return;
+    }
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(message);
     utterance.lang = langMeta.speech;
-    const voice = pickBestCoachVoice(window.speechSynthesis.getVoices(), langMeta.speech);
+    const voice = pickBestCoachVoice(
+      window.speechSynthesis.getVoices(),
+      langMeta.speech,
+      preferences.coachVoiceURI,
+    );
     if (voice) utterance.voice = voice;
     utterance.rate = 0.9;
     utterance.pitch = 0.98;
@@ -1462,11 +995,26 @@ function App() {
 
   function analyzeHistoryRecord(record) {
     if (!record || record.id === HISTORY_PREVIEW_RECORD.id) return;
+    const limit = canAnalyzeHistory(profile, isPro, todayKey);
+    if (!limit.allowed) {
+      showToast(t.limits[limit.reason]);
+      setActiveModal("pro");
+      return;
+    }
+    if (!isPro) {
+      setProfile((current) => recordLimitUsage(current, limit.usageKey, todayKey));
+    }
     setHistoryAnalysisRecord(record);
     setActiveModal("historyAnalysis");
   }
 
   function startNewGame(difficulty = game.difficulty, mode = "free") {
+    const limit = canStartGame(profile, isPro, mode, todayKey);
+    if (!limit.allowed) {
+      showToast(t.limits[limit.reason]);
+      setActiveModal("pro");
+      return;
+    }
     if (gameHasProgress(game)) {
       const abandoned = appendToArchive(game, "abandoned", { elapsedSec: getElapsed(game) });
       setHistoryRecords(loadArchive());
@@ -1477,6 +1025,9 @@ function App() {
     setCoachStep(null);
     setProofVisible(false);
     setCoachMessageState(mode === "daily" ? t.coach.dailyReady : t.coach.freeReady);
+    if (!isPro) {
+      setProfile((current) => recordLimitUsage(current, limit.usageKey, todayKey));
+    }
   }
 
   function startFamousGame(puzzleId) {
@@ -1497,7 +1048,7 @@ function App() {
     setCoachStep(null);
     setProofVisible(false);
     setCoachMessageState(null);
-    window.location.hash = "#/";
+    navigateTo(ROUTES.play);
   }
 
   function restartLearningLesson(lessonId) {
@@ -1523,11 +1074,8 @@ function App() {
   }
 
   function selectCell(index) {
-    setGame((current) => ({
-      ...current,
-      selected: index,
-      hintCells: [],
-    }));
+    dispatchGame({ type: GAME_ACTIONS.SELECT_CELL, index });
+    collaboration.updateSelection(index);
     setProofVisible(false);
   }
 
@@ -1541,6 +1089,17 @@ function App() {
     if (game.fixed[index]) {
       flashLockedCell(index);
       playFeedback("reject");
+      return;
+    }
+
+    if (collaboration.enabled) {
+      void collaboration.proposeMove({
+        kind: game.noteMode ? "note" : "place",
+        index,
+        number,
+      }).then((result) => {
+        if (result?.ok) showToast(collaborationLabels.toasts.moveProposed);
+      });
       return;
     }
 
@@ -1570,6 +1129,24 @@ function App() {
           mistakes: current.mistakes + 1,
           hintCells: [],
           lastNumber: number,
+          wrongEntries: [
+            ...(current.wrongEntries || []),
+            {
+              index,
+              value: number,
+              better: current.solution[index],
+              elapsedSec: getElapsed(current),
+            },
+          ],
+          activityLog: [
+            ...(current.activityLog || []),
+            {
+              kind: "wrong",
+              index,
+              value: number,
+              elapsedSec: getElapsed(current),
+            },
+          ],
         }));
         showToast(t.toasts.wrongEntry);
         playFeedback("reject");
@@ -1581,9 +1158,24 @@ function App() {
     next.values = [...next.values];
     next.notes = next.notes.map((note) => [...note]);
     next.values[index] = number;
+    if (preferences.smartNotes) {
+      const peers = getPeers(index);
+      next.notes = next.notes.map((note, noteIndex) =>
+        peers.has(noteIndex) ? note.filter((candidate) => candidate !== number) : note,
+      );
+    }
     next.notes[index] = [];
     next.hintCells = [];
     next.lastNumber = number;
+    next.activityLog = [
+      ...(next.activityLog || []),
+      {
+        kind: "place",
+        index,
+        value: number,
+        elapsedSec: getElapsed(game),
+      },
+    ];
     const completesPuzzle = isSolved(next);
     commitGame(next, true);
     if (!completesPuzzle) playFeedback("place");
@@ -1600,48 +1192,51 @@ function App() {
     }
     if (!game.values[index] && game.notes[index].length === 0) return;
 
+    if (collaboration.enabled) {
+      void collaboration.proposeMove({ kind: "erase", index }).then((result) => {
+        if (result?.ok) showToast(collaborationLabels.toasts.moveProposed);
+      });
+      return;
+    }
+
     const next = withHistory(game);
     next.values = [...next.values];
     next.notes = next.notes.map((note) => [...note]);
     next.values[index] = 0;
-    next.notes[index] = [];
+    next.notes[index] = preferences.smartNotes ? getCandidates(next.values, index) : [];
     next.hintCells = [];
     commitGame(next);
     playFeedback("erase");
   }
 
   function undo() {
-    if (game.history.length === 0 || game.completed) return;
-    const previous = game.history[game.history.length - 1];
-    const next = restoreSnapshot(
-      {
-        ...game,
-        history: game.history.slice(0, -1),
-        future: [...game.future, makeSnapshot(game)],
-      },
-      previous,
-    );
-    setGame(next);
+    if (collaboration.enabled || game.history.length === 0 || game.completed) return;
+    dispatchGame({ type: GAME_ACTIONS.UNDO });
     playFeedback("undo");
   }
 
   function redo() {
-    if (game.future.length === 0 || game.completed) return;
-    const future = game.future[game.future.length - 1];
-    const next = restoreSnapshot(
-      {
-        ...game,
-        history: [...game.history, makeSnapshot(game)],
-        future: game.future.slice(0, -1),
-      },
-      future,
-    );
-    setGame(next);
+    if (collaboration.enabled || game.future.length === 0 || game.completed) return;
+    dispatchGame({ type: GAME_ACTIONS.REDO });
     playFeedback("redo");
+  }
+
+  function publishDailyLeaderboardResult(nextProfile, seconds, dateKey) {
+    if (!supabase || !authUser?.id) return;
+    void upsertDailyLeaderboardEntry(supabase, authUser.id, {
+      dateKey,
+      nickname: nextProfile.name,
+      city: nextProfile.city || DEFAULT_CITY,
+      country: nextProfile.country || DEFAULT_COUNTRY,
+      seconds,
+    })
+      .then(() => refreshDailyLeaderboard())
+      .catch((error) => console.warn("Daily leaderboard publish failed.", error));
   }
 
   function completePuzzle(nextGame) {
     const finalTime = getElapsed(nextGame);
+    const review = createGameReview(nextGame, finalTime);
     if (nextGame.suppressVictoryRewards) {
       setGame({
         ...nextGame,
@@ -1650,6 +1245,7 @@ function App() {
         history: [],
         future: [],
         awardXp: 0,
+        review,
         suppressVictoryRewards: false,
       });
       showToast(t.toasts.solvedReplay);
@@ -1673,6 +1269,7 @@ function App() {
           history: [],
           future: [],
           awardXp: 0,
+          review,
         });
         showToast(t.toasts.solvedReplay);
         playFeedback("complete");
@@ -1701,6 +1298,7 @@ function App() {
         history: [],
         future: [],
         awardXp: gainedXp,
+        review,
       };
 
       setGame(completed);
@@ -1751,6 +1349,7 @@ function App() {
       history: [],
       future: [],
       awardXp: gainedXp,
+      review,
     };
 
     setGame(completed);
@@ -1795,19 +1394,27 @@ function App() {
         }
       }
 
-      return {
+      const nextDailyResults =
+        nextGame.mode === "daily"
+          ? {
+              ...current.dailyResults,
+              [today]: current.dailyResults?.[today] ? Math.min(current.dailyResults[today], finalTime) : finalTime,
+            }
+          : current.dailyResults;
+      const nextProfile = {
         ...current,
         xp: current.xp + gainedXp,
         solved: current.solved + 1,
         streak: nextStreak,
         lastPlayed: isFamous ? current.lastPlayed : today,
         badges: [...badges],
-        dailyResults:
-          nextGame.mode === "daily"
-            ? { ...current.dailyResults, [today]: finalTime }
-            : current.dailyResults,
+        dailyResults: nextDailyResults,
         famousBests: nextFamousBests,
       };
+      if (nextGame.mode === "daily") {
+        publishDailyLeaderboardResult(nextProfile, nextDailyResults[today], today);
+      }
+      return nextProfile;
     });
     showToast(t.toasts.solved(gainedXp));
     playFeedback("complete");
@@ -1815,13 +1422,19 @@ function App() {
 
   function requestCoach(mode) {
     if (game.completed) return;
+    const limit = canUseCoach(profile, isPro, todayKey);
+    if (!limit.allowed) {
+      showToast(t.limits[limit.reason]);
+      setActiveModal("pro");
+      return;
+    }
     const selectedNumber =
       game.selected === null || game.selected === undefined
         ? game.lastNumber
         : game.values[game.selected] || game.lastNumber;
     const step =
       mode === "lesson"
-        ? createLessonStep(game)
+        ? createLessonStep(game, { technique: getLearningLevelById(game.learningLevelId)?.technique })
         : createCoachStep(game, mode, {
             index: game.selected,
             number: selectedNumber,
@@ -1832,22 +1445,25 @@ function App() {
     setProofVisible(mode !== "hint");
 
     if (mode === "hint" && !["conflict", "instruction"].includes(step.kind)) {
-      setGame((current) => ({
-        ...current,
-        hintsUsed: current.hintsUsed + 1,
-        learningCleanEligible: current.mode === "learning" ? false : current.learningCleanEligible,
-        selected: Number.isInteger(step.target) ? step.target : current.selected,
-        lastNumber: step.number || current.lastNumber,
-      }));
+      dispatchGame({
+        type: GAME_ACTIONS.REQUEST_HINT,
+        countHint: true,
+        target: step.target,
+        number: step.number,
+      });
     } else if (Number.isInteger(step.target)) {
-      setGame((current) => ({
-        ...current,
-        selected: step.target,
-        lastNumber: step.number || current.lastNumber,
-      }));
+      dispatchGame({
+        type: GAME_ACTIONS.REQUEST_HINT,
+        countHint: false,
+        target: step.target,
+        number: step.number,
+      });
     }
 
     setCoachMessage(`${step.title}: ${step.summary} ${step.explanation}`);
+    if (!isPro) {
+      setProfile((current) => recordLimitUsage(current, limit.usageKey, todayKey));
+    }
   }
 
   function toggleProof() {
@@ -1866,14 +1482,42 @@ function App() {
       return;
     }
 
+    if (collaboration.enabled) {
+      void collaboration.proposeMove({
+        kind: "place",
+        index: coachStep.target,
+        number: coachStep.number,
+      }).then((result) => {
+        if (result?.ok) showToast(collaborationLabels.toasts.moveProposed);
+      });
+      setProofVisible(false);
+      return;
+    }
+
     const next = withHistory(game);
     next.values = [...next.values];
     next.notes = next.notes.map((note) => [...note]);
     next.values[coachStep.target] = coachStep.number;
+    if (preferences.smartNotes) {
+      const peers = getPeers(coachStep.target);
+      next.notes = next.notes.map((note, noteIndex) =>
+        peers.has(noteIndex) ? note.filter((candidate) => candidate !== coachStep.number) : note,
+      );
+    }
     next.notes[coachStep.target] = [];
     next.lastNumber = coachStep.number;
     next.selected = coachStep.target;
     next.hintCells = [];
+    next.activityLog = [
+      ...(next.activityLog || []),
+      {
+        kind: "coach",
+        index: coachStep.target,
+        value: coachStep.number,
+        technique: coachStep.technique,
+        elapsedSec: getElapsed(game),
+      },
+    ];
     if (game.mode === "learning") {
       next.learningCleanEligible = false;
     }
@@ -1892,6 +1536,7 @@ function App() {
     redo,
     setActiveModal,
     setGame,
+    dispatchGame,
   };
 
   function moveSelection(key) {
@@ -1906,21 +1551,19 @@ function App() {
       arrowright: [row, Math.min(8, col + 1)],
     }[key];
 
-    setGame({
-      ...game,
-      selected: next[0] * 9 + next[1],
-      hintCells: [],
-    });
+    dispatchGame({ type: GAME_ACTIONS.SELECT_CELL, index: next[0] * 9 + next[1] });
   }
 
   async function handleAuthNavClick() {
     if (authUser && supabase) {
-      await supabase.auth.signOut();
+      await signOut();
       setCloudSynced(false);
+      clearAuthReturnRoute();
+      clearPostAuthAction();
       showToast(t.toasts.signedOut);
       return;
     }
-    window.location.hash = "#/sign-in";
+    requestSignIn();
   }
 
   async function openPolarCheckout() {
@@ -1930,7 +1573,7 @@ function App() {
     }
     setProBusy(true);
     try {
-      const { url, error } = await createPolarCheckoutSession();
+      const { url, error } = await startProCheckout();
       if (error || !url) {
         showToast(t.modals.polarFail);
         return;
@@ -1940,6 +1583,56 @@ function App() {
       setProBusy(false);
     }
   }
+
+  async function shareCollaborationRoom() {
+    if (!supabase || !isSupabaseConfigured) {
+      showToast(collaborationLabels.toasts.needCloud);
+      return;
+    }
+    if (!authUser) {
+      showToast(collaborationLabels.toasts.signInRequired);
+      requestSignIn({ postAuthAction: POST_AUTH_ACTIONS.shareCollaboration });
+      return;
+    }
+    try {
+      const room = await createCollaborationRoom(supabase, {
+        authUser,
+        profile,
+        game,
+        isPro,
+      });
+      const link = `${window.location.origin}${window.location.pathname}${ROUTES.collab(room.id)}`;
+      const copied = await copyCollaborationLink(link);
+      showToast(copied ? collaborationLabels.toasts.linkCopied : collaborationLabels.toasts.linkReady);
+      navigateTo(ROUTES.collab(room.id));
+    } catch (error) {
+      showToast(error?.message || collaborationLabels.toasts.createFailed);
+    }
+  }
+
+  async function copyCollaborationLink(link) {
+    if (!navigator.clipboard?.writeText) return false;
+    try {
+      await navigator.clipboard.writeText(link);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  useEffect(() => {
+    if (!authUser || !authReady || hashRoute.kind === "sign-in") return;
+    let action = "";
+    try {
+      action = window.sessionStorage?.getItem(POST_AUTH_ACTION_KEY) || "";
+      if (action) window.sessionStorage?.removeItem(POST_AUTH_ACTION_KEY);
+    } catch {
+      return;
+    }
+    if (action === POST_AUTH_ACTIONS.shareCollaboration) {
+      void shareCollaborationRoom();
+    }
+  }, [authUser, authReady, hashRoute.kind]);
 
   if (!authReady) {
     return (
@@ -1961,9 +1654,70 @@ function App() {
             navAria={t.aria.nav}
             cloudAvailable={isSupabaseConfigured}
             onSignedIn={(msg) => showToast(msg || t.toasts.signedIn)}
-            onBack={() => {
-              window.location.hash = "#/";
+            onComplete={() => {
+              const returnTo = readAuthReturnRoute();
+              clearAuthReturnRoute();
+              navigateTo(returnTo);
             }}
+            onBack={() => {
+              const returnTo = readAuthReturnRoute();
+              clearAuthReturnRoute();
+              clearPostAuthAction();
+              navigateTo(returnTo);
+            }}
+          />
+        </div>
+        <div className={`toast ${toast ? "show" : ""}`} aria-live="polite">
+          {toast}
+        </div>
+      </>
+    );
+  }
+
+  if (isCollaborationRoute && !authUser) {
+    return (
+      <>
+        <div className="app-shell">
+          <AuthPage
+            labels={t.auth}
+            brandTagline={t.tagline}
+            navAria={t.aria.nav}
+            cloudAvailable={isSupabaseConfigured}
+            onSignedIn={(msg) => showToast(msg || t.toasts.signedIn)}
+            onComplete={() => {
+              clearAuthReturnRoute();
+            }}
+            onBack={() => {
+              clearAuthReturnRoute();
+              clearPostAuthAction();
+              navigateTo(ROUTES.play);
+            }}
+          />
+        </div>
+        <div className={`toast ${toast ? "show" : ""}`} aria-live="polite">
+          {toast}
+        </div>
+      </>
+    );
+  }
+
+  if (hashRoute.kind === "landing") {
+    return (
+      <>
+        <div className="app-shell">
+          <LandingPage
+            labels={t.landing}
+            navLabels={t.nav}
+            authLabel={authUser ? t.nav.signOut : t.nav.signIn}
+            brandTagline={t.tagline}
+            navAria={t.aria.nav}
+            language={preferences.language}
+            languageOptions={LANG_META}
+            onLanguageChange={(languageKey) => setPreferences((current) => ({ ...current, language: languageKey }))}
+            onPlay={() => navigateTo(ROUTES.play)}
+            onLearn={() => navigateTo(ROUTES.learn)}
+            onFamous={() => navigateTo(ROUTES.famous)}
+            onSignIn={() => void handleAuthNavClick()}
           />
         </div>
         <div className={`toast ${toast ? "show" : ""}`} aria-live="polite">
@@ -1985,7 +1739,7 @@ function App() {
             difficultyLabels={t.difficulties}
             famousBests={profile.famousBests || {}}
             onBack={() => {
-              window.location.hash = "#/";
+              navigateTo(ROUTES.play);
             }}
             onPlay={(id) => startFamousGame(id)}
           />
@@ -2014,14 +1768,38 @@ function App() {
             }}
             progress={loadLearningProgress()}
             onBack={() => {
-              window.location.hash = "#/";
+              navigateTo(ROUTES.play);
+            }}
+            onTechniques={() => {
+              navigateTo(ROUTES.techniques);
             }}
             onSelectLesson={(id) => {
               if (!isLessonUnlocked(id, loadLearningProgress().completedIds)) {
                 showToast(t.learning.locked);
                 return;
               }
-              window.location.hash = `#/learn/${encodeURIComponent(id)}`;
+              navigateTo(ROUTES.lesson(id));
+            }}
+          />
+        </div>
+        <div className={`toast ${toast ? "show" : ""}`} aria-live="polite">
+          {toast}
+        </div>
+      </>
+    );
+  }
+
+  if (hashRoute.kind === "techniques") {
+    return (
+      <>
+        <div className="app-shell">
+          <TechniquesPage
+            labels={t.learning}
+            brandTagline={t.tagline}
+            navAria={t.aria.nav}
+            language={preferences.language}
+            onBack={() => {
+              navigateTo(ROUTES.learn);
             }}
           />
         </div>
@@ -2034,23 +1812,36 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="topbar" aria-label={t.aria.nav}>
+      <header className={`topbar main-topbar ${mobileMenuOpen ? "is-open" : ""}`} aria-label={t.aria.nav}>
         <Brand tagline={t.tagline} />
 
-        <div className="top-actions">
+        <button
+          className="mini-button icon-button mobile-menu-button"
+          type="button"
+          aria-label={mobileMenuOpen ? t.actions.close : "Menu"}
+          aria-expanded={mobileMenuOpen}
+          aria-controls="primary-actions"
+          onClick={() => setMobileMenuOpen((open) => !open)}
+        >
+          {mobileMenuOpen ? <X size={18} aria-hidden="true" /> : <Menu size={18} aria-hidden="true" />}
+          <span>{mobileMenuOpen ? t.actions.close : "Menu"}</span>
+        </button>
+
+        <div className="top-actions" id="primary-actions">
           <IconButton
             icon={BookOpen}
             label={t.nav.learn}
             variant="famous"
             onClick={() => {
-              window.location.hash = "#/learn";
+              setMobileMenuOpen(false);
+              navigateTo(ROUTES.learn);
             }}
           />
-          <IconButton icon={Trophy} label={t.nav.famous} variant="famous" onClick={() => { window.location.hash = "#/famous"; }} />
-          <IconButton icon={Settings} label={t.nav.settings} onClick={() => setActiveModal("settings")} />
-          <IconButton icon={HelpCircle} label={t.nav.rules} onClick={() => setActiveModal("rules")} />
-          <IconButton icon={Crown} label={t.nav.pro} variant="pro" onClick={() => setActiveModal("pro")} />
-          <IconButton icon={LogIn} label={authUser ? t.nav.signOut : t.nav.signIn} variant="auth" onClick={handleAuthNavClick} />
+          <IconButton icon={Trophy} label={t.nav.famous} variant="famous" onClick={() => { setMobileMenuOpen(false); navigateTo(ROUTES.famous); }} />
+          <IconButton icon={Settings} label={t.nav.settings} onClick={() => { setMobileMenuOpen(false); setActiveModal("settings"); }} />
+          <IconButton icon={HelpCircle} label={t.nav.rules} onClick={() => { setMobileMenuOpen(false); setActiveModal("rules"); }} />
+          <IconButton icon={Crown} label={t.nav.pro} variant="pro" onClick={() => { setMobileMenuOpen(false); setActiveModal("pro"); }} />
+          <IconButton icon={LogIn} label={authUser ? t.nav.signOut : t.nav.signIn} variant="auth" onClick={() => { setMobileMenuOpen(false); handleAuthNavClick(); }} />
         </div>
       </header>
 
@@ -2071,7 +1862,7 @@ function App() {
                     }
                   </p>
                   <h1>{pickLocalized(getLearningLevelById(game.learningLevelId)?.title, preferences.language, "")}</h1>
-                  <button className="mini-button learning-back" type="button" onClick={() => { window.location.hash = "#/learn"; }}>
+                  <button className="mini-button learning-back" type="button" onClick={() => { navigateTo(ROUTES.learn); }}>
                     <ArrowLeft size={17} aria-hidden="true" />
                     {t.learning.back}
                   </button>
@@ -2079,9 +1870,15 @@ function App() {
               ) : (
                 <>
                   <p className="eyebrow">
-                    {game.mode === "daily" ? t.modes.daily : t.modes.free} · {game.generator.clues} {t.stats.hints}
+                    {isCollaborationRoute ? collaborationLabels.eyebrow : game.mode === "daily" ? t.modes.daily : t.modes.free} · {game.generator.clues} {t.stats.hints}
                   </p>
-                  <h1>{game.mode === "daily" ? t.modes.dailyTitle : `${t.difficulties[game.difficulty]} ${t.modes.freeTitle}`}</h1>
+                  <h1>
+                    {isCollaborationRoute
+                      ? collaborationLabels.title
+                      : game.mode === "daily"
+                        ? t.modes.dailyTitle
+                        : `${t.difficulties[game.difficulty]} ${t.modes.freeTitle}`}
+                  </h1>
                 </>
               )}
             </div>
@@ -2092,7 +1889,20 @@ function App() {
             </div>
           </div>
 
-          {game.mode === "learning" ? null : (
+          {!isCollaborationRoute ? (
+            <div className="share-strip">
+              <div>
+                <p className="eyebrow">{collaborationLabels.eyebrow}</p>
+                <h2>{collaborationLabels.room}</h2>
+              </div>
+              <button className="mini-button icon-button share-strip-button" type="button" onClick={() => void shareCollaborationRoom()}>
+                <Share2 size={17} aria-hidden="true" />
+                {collaborationLabels.actions.share}
+              </button>
+            </div>
+          ) : null}
+
+          {game.mode === "learning" || isCollaborationRoute ? null : (
             <div className="difficulty-bar" aria-label={t.aria.difficulty}>
               {Object.entries(DIFFICULTIES).map(([key, item]) => (
                 <button
@@ -2138,6 +1948,7 @@ function App() {
                     onClick={() => selectCell(index)}
                   />
                 ))}
+                <RemoteSelectionOverlays selections={collaboration.remoteSelections} />
               </div>
             </div>
             {preferences.showFocusLens ? (
@@ -2177,10 +1988,11 @@ function App() {
                       <Metric value={`+${game.awardXp || 0}`} label="XP" />
                       <Metric value={profile.streak} label="streak" />
                     </div>
+                    <WinReview review={game.review} labels={t.learning} />
                     <div className="win-actions">
                       {game.mode === "learning" && game.learningLevelId ? (
                         <>
-                          <button type="button" onClick={() => { window.location.hash = "#/learn"; }}>
+                          <button type="button" onClick={() => { navigateTo(ROUTES.learn); }}>
                             {t.actions.backToLessons}
                           </button>
                           <button type="button" onClick={() => restartLearningLesson(game.learningLevelId)}>
@@ -2213,13 +2025,14 @@ function App() {
           </div>
 
           <div className="tool-row" aria-label={t.aria.tools}>
-            <IconButton icon={Pencil} label={t.actions.pencil} active={game.noteMode} onClick={() => setGame({ ...game, noteMode: !game.noteMode })} />
+            <IconButton icon={Pencil} label={t.actions.pencil} active={game.noteMode} onClick={() => dispatchGame({ type: GAME_ACTIONS.TOGGLE_NOTE_MODE })} />
             <IconButton icon={Eraser} label={t.actions.erase} onClick={eraseCell} />
-            <IconButton icon={Undo2} label={t.actions.undo} disabled={game.history.length === 0} onClick={undo} />
-            <IconButton icon={Redo2} label={t.actions.redo} disabled={game.future.length === 0} onClick={redo} />
+            <IconButton icon={Undo2} label={t.actions.undo} disabled={collaboration.enabled || game.history.length === 0} onClick={undo} />
+            <IconButton icon={Redo2} label={t.actions.redo} disabled={collaboration.enabled || game.future.length === 0} onClick={redo} />
             <IconButton
               icon={RefreshCw}
               label={t.actions.newGame}
+              disabled={collaboration.enabled}
               onClick={() =>
                 game.mode === "learning" && game.learningLevelId
                   ? restartLearningLesson(game.learningLevelId)
@@ -2256,7 +2069,9 @@ function App() {
                   exit={{ opacity: 0, height: 0 }}
                 >
                   <HistoryTableView
-                    records={sortedHistory}
+                    records={isPro ? sortedHistory : sortedHistory.slice(0, FREE_TIER_LIMITS.historyVisibleRecords)}
+                    totalRecords={sortedHistory.length}
+                    isPro={isPro}
                     labels={t.history}
                     difficultyLabels={t.difficulties}
                     dailyLabel={t.modes.dailyTitle}
@@ -2273,6 +2088,17 @@ function App() {
         </section>
 
         <aside className="side-panel" aria-label={t.aria.side}>
+          {isCollaborationRoute ? (
+            <CollaborationPanel
+              collaboration={collaboration}
+              labels={collaborationLabels}
+              onCopyLink={async () => {
+                const link = `${window.location.origin}${window.location.pathname}${ROUTES.collab(hashRoute.roomId)}`;
+                const copied = await copyCollaborationLink(link);
+                showToast(copied ? collaborationLabels.toasts.linkCopied : collaborationLabels.toasts.linkReady);
+              }}
+            />
+          ) : null}
           <section className="panel-block daily-block">
             <div className="panel-heading">
               <div>
@@ -2346,13 +2172,13 @@ function App() {
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">{t.panels.leaderboard}</p>
-                <h2>Алматы</h2>
+                <h2>{profile.city || DEFAULT_CITY}</h2>
               </div>
               <span className="city-filter">{t.panels.local}</span>
             </div>
             <ol className="leaderboard">
               {leaderboard.map((leader) => (
-                <li key={`${leader.name}-${leader.seconds}`}>
+                <li key={leader.id || `${leader.name}-${leader.seconds}`}>
                   <span>
                     <strong>{leader.name}</strong>
                     <small>{leader.city}</small>
@@ -2371,7 +2197,10 @@ function App() {
             <SettingsPanel
               preferences={preferences}
               labels={t.settings}
+              isPro={isPro}
+              voiceOptions={getCoachVoiceOptions(speechVoices, langMeta.speech)}
               onChange={(next) => setPreferences((current) => ({ ...current, ...next }))}
+              onUpgrade={() => setActiveModal("pro")}
             />
           </Modal>
         )}
@@ -2394,7 +2223,7 @@ function App() {
               onSubscribe={() => void openPolarCheckout()}
               onSignIn={() => {
                 setActiveModal(null);
-                window.location.hash = "#/sign-in";
+                requestSignIn();
               }}
             />
           </Modal>
@@ -2466,6 +2295,46 @@ function Cell({ index, value, notes, fixed, selected, peer, same, conflict, high
   );
 }
 
+function RemoteSelectionOverlays({ selections }) {
+  if (!selections?.length) return null;
+  const byCell = new Map();
+  for (const selection of selections) {
+    if (!Number.isInteger(selection.index)) continue;
+    const list = byCell.get(selection.index) || [];
+    list.push(selection);
+    byCell.set(selection.index, list);
+  }
+  return (
+    <div className="remote-selection-layer" aria-hidden="true">
+      {[...byCell.entries()].map(([index, cellSelections]) => {
+        const row = Math.floor(index / 9);
+        const col = index % 9;
+        const primary = cellSelections[0];
+        return (
+          <div
+            key={index}
+            className="remote-selection"
+            style={{
+              "--row": row,
+              "--col": col,
+              "--selection-color": primary.color,
+            }}
+          >
+            <div className="remote-selection__labels">
+              {cellSelections.slice(0, 3).map((selection) => (
+                <span key={selection.userId} style={{ "--selection-color": selection.color }}>
+                  {selection.name}
+                </span>
+              ))}
+              {cellSelections.length > 3 ? <span>+{cellSelections.length - 3}</span> : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function NotesGrid({ notes }) {
   const active = new Set(notes);
   return (
@@ -2476,6 +2345,138 @@ function NotesGrid({ notes }) {
         </span>
       ))}
     </span>
+  );
+}
+
+function CollaborationPanel({ collaboration, labels, onCopyLink }) {
+  const [draft, setDraft] = useState("");
+  const activeIds = new Set(collaboration.activeMembers.map((member) => member.user_id));
+
+  async function handleSend(event) {
+    event.preventDefault();
+    const body = draft.trim();
+    if (!body) return;
+    setDraft("");
+    await collaboration.sendMessage(body);
+  }
+
+  return (
+    <section className="panel-block collaboration-block">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">{labels.eyebrow}</p>
+          <h2>{labels.room}</h2>
+        </div>
+        <span className="status-dot">
+          {collaboration.activeMembers.length}/{collaboration.room?.maxParticipants || 5}
+        </span>
+      </div>
+
+      {collaboration.loading ? <p className="collaboration-note">{labels.loading}</p> : null}
+      {collaboration.error ? <p className="collaboration-error">{collaboration.error}</p> : null}
+
+      <div className="collaboration-actions">
+        <button className="mini-button icon-button" type="button" onClick={onCopyLink}>
+          <Share2 size={16} aria-hidden="true" />
+          {labels.actions.copyLink}
+        </button>
+        <label className="collaboration-toggle">
+          <span>{labels.actions.autoAgree}</span>
+          <span className="switch">
+            <input
+              type="checkbox"
+              checked={Boolean(collaboration.currentMember?.auto_agree)}
+              onChange={(event) => void collaboration.setAutoAgree(event.target.checked)}
+            />
+            <span />
+          </span>
+        </label>
+      </div>
+
+      <div className="collaboration-members" aria-label={labels.members}>
+        {collaboration.members.map((member) => (
+          <span
+            key={member.user_id}
+            className={activeIds.has(member.user_id) ? "is-active" : ""}
+            style={{ "--member-color": member.color_token }}
+          >
+            <i />
+            {member.display_name}
+          </span>
+        ))}
+      </div>
+
+      <div className="collaboration-proposals">
+        <strong>{labels.pending}</strong>
+        {collaboration.pendingProposals.length ? (
+          collaboration.pendingProposals.map((proposal) => {
+            const summary = collaboration.voteSummary(proposal);
+            const proposer = collaboration.members.find((member) => member.user_id === proposal.proposer_id);
+            return (
+              <article key={proposal.id} className="collaboration-proposal">
+                <span>{proposer?.display_name || labels.someone}</span>
+                <p>{summarizeAction(proposal.action, labels.moves)}</p>
+                <small>
+                  {labels.votes(summary.approvalCount, summary.threshold)}
+                </small>
+                <div>
+                  <button
+                    className="mini-button icon-button"
+                    type="button"
+                    disabled={Boolean(summary.myVote?.approved)}
+                    onClick={() => void collaboration.approveProposal(proposal)}
+                  >
+                    <CheckCircle2 size={15} aria-hidden="true" />
+                    {labels.actions.agree}
+                  </button>
+                  <button
+                    className="mini-button icon-button"
+                    type="button"
+                    disabled={summary.myVote?.approved === false}
+                    onClick={() => void collaboration.rejectProposal(proposal)}
+                  >
+                    <X size={15} aria-hidden="true" />
+                    {labels.actions.pass}
+                  </button>
+                </div>
+              </article>
+            );
+          })
+        ) : (
+          <p className="collaboration-note">{labels.noPending}</p>
+        )}
+      </div>
+
+      <div className="collaboration-chat">
+        <div className="collaboration-chat__head">
+          <MessageCircle size={16} aria-hidden="true" />
+          <strong>{labels.chat}</strong>
+        </div>
+        <div className="collaboration-chat__messages">
+          {collaboration.messages.length ? (
+            collaboration.messages.map((message) => (
+              <p key={message.id}>
+                <strong>{message.display_name}</strong>
+                <span>{message.body}</span>
+              </p>
+            ))
+          ) : (
+            <p className="collaboration-note">{labels.noMessages}</p>
+          )}
+        </div>
+        <form className="collaboration-chat__form" onSubmit={handleSend}>
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={labels.messagePlaceholder}
+            maxLength={500}
+          />
+          <button type="submit" aria-label={labels.actions.send}>
+            <Send size={16} aria-hidden="true" />
+          </button>
+        </form>
+      </div>
+    </section>
   );
 }
 
@@ -2510,6 +2511,13 @@ function CoachCard({ message, step, proofVisible, labels, onShowProof, onApply }
         </div>
       )}
       {proofVisible && <p className="proof-copy">{step.proof}</p>}
+      {step.reasoning?.length > 0 && (
+        <ol className="coach-reasoning">
+          {step.reasoning.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ol>
+      )}
       <div className="coach-actions">
         <IconButton
           icon={Lightbulb}
@@ -2660,6 +2668,44 @@ function pickLocalized(value, language, fallback = "") {
   return String(value);
 }
 
+function createGameReview(game, finalTime) {
+  const wrongEntries = game.wrongEntries || [];
+  const activity = [...(game.activityLog || [])].sort((a, b) => a.elapsedSec - b.elapsedSec);
+  const firstWrong = wrongEntries[0] || null;
+  let slowest = null;
+  let previous = 0;
+
+  for (const entry of activity) {
+    if (!Number.isFinite(entry.elapsedSec)) continue;
+    const gap = Math.max(0, entry.elapsedSec - previous);
+    if (!slowest || gap > slowest.seconds) {
+      slowest = { ...entry, seconds: gap };
+    }
+    previous = entry.elapsedSec;
+  }
+
+  if (Number.isFinite(finalTime)) {
+    const finishGap = Math.max(0, finalTime - previous);
+    if (!slowest || finishGap > slowest.seconds) {
+      slowest = { kind: "finish", seconds: finishGap, elapsedSec: finalTime };
+    }
+  }
+
+  const missedTechnique =
+    game.hintsUsed > 0
+      ? createCoachStep({ ...game, completed: false }, "lesson")?.technique || "Candidate Scan"
+      : firstWrong
+      ? "Conflict Explanation"
+      : null;
+
+  return {
+    firstWrong,
+    slowest,
+    missedTechnique,
+    clean: !firstWrong && game.hintsUsed === 0 && game.mistakes === 0,
+  };
+}
+
 function LearningCatalogPage({
   labels,
   brandTagline,
@@ -2669,8 +2715,25 @@ function LearningCatalogPage({
   tierLabels,
   progress,
   onBack,
+  onTechniques,
   onSelectLesson,
 }) {
+  const tierStats = TECHNIQUE_TIERS.map((key) => {
+    const label =
+      {
+        beginner: tierLabels.beginner,
+        tactician: labels.tierTactician,
+        master: labels.tierMaster,
+        expert: labels.tierExpert,
+      }[key] || key;
+    const techniques = SUDOKU_TECHNIQUES.filter((technique) => technique.tier === key);
+    const completedLessons = LEARNING_LEVELS.filter((level) => progress.completedIds.includes(level.id)).length;
+    const tierIndex = TECHNIQUE_TIERS.indexOf(key);
+    const unlockThreshold = [0, 6, 12, 16][tierIndex] ?? 0;
+    const done = completedLessons >= unlockThreshold ? techniques.length : 0;
+    return { key, label, total: Math.max(1, techniques.length), done };
+  });
+
   return (
     <>
       <header className="topbar" aria-label={navAria}>
@@ -2685,6 +2748,28 @@ function LearningCatalogPage({
           <p className="eyebrow">{labels.eyebrow}</p>
           <h1>{labels.title}</h1>
           <p className="learning-lead">{labels.lead}</p>
+          <div className="learning-hero-actions">
+            <button className="mini-button icon-button" type="button" onClick={onTechniques}>
+              <BookOpen size={17} aria-hidden="true" />
+              {labels.techniques}
+            </button>
+          </div>
+        </section>
+
+        <section className="learning-map" aria-label={labels.pathTitle}>
+          <div className="learning-map__intro">
+            <p className="eyebrow">{labels.pathTitle}</p>
+            <p>{labels.pathLead}</p>
+          </div>
+          <ol className="learning-map__steps">
+            {tierStats.map((tier, index) => (
+              <li key={tier.key} className={tier.done === tier.total ? "is-complete" : ""}>
+                <span>{index + 1}</span>
+                <strong>{tier.label}</strong>
+                <small>{tier.done}/{tier.total}</small>
+              </li>
+            ))}
+          </ol>
         </section>
 
         <section className="learning-grid" role="list">
@@ -2729,6 +2814,138 @@ function LearningCatalogPage({
         </section>
       </main>
     </>
+  );
+}
+
+function TechniquesPage({ labels, brandTagline, navAria, language, onBack }) {
+  return (
+    <>
+      <header className="topbar" aria-label={navAria}>
+        <Brand tagline={brandTagline} />
+        <div className="top-actions">
+          <IconButton icon={ArrowLeft} label={labels.back} onClick={onBack} />
+        </div>
+      </header>
+
+      <main className="learning-page" aria-label={labels.techniquesTitle}>
+        <section className="learning-hero">
+          <p className="eyebrow">{labels.techniques}</p>
+          <h1>{labels.techniquesTitle}</h1>
+          <p className="learning-lead">{labels.techniquesLead}</p>
+        </section>
+
+        <section className="technique-grid" role="list">
+          {SUDOKU_TECHNIQUES.map((technique) => (
+            <TechniqueCard key={technique.id} technique={technique} labels={labels} language={language} />
+          ))}
+        </section>
+      </main>
+    </>
+  );
+}
+
+function TechniqueCard({ technique, labels, language }) {
+  const [choice, setChoice] = useState(null);
+  const trainer = technique.trainer;
+  const answered = choice !== null;
+  const correct = String(choice) === String(trainer.answer);
+  const tierLabel =
+    {
+      beginner: labels.tierBeginner,
+      tactician: labels.tierTactician,
+      master: labels.tierMaster,
+      expert: labels.tierExpert,
+    }[technique.tier] || technique.tier;
+
+  return (
+    <article className="technique-card" role="listitem">
+      <div className="technique-card__copy">
+        <span className="learning-tier">{tierLabel}</span>
+        <h2>{technique.name}</h2>
+        <p>{pickLocalized(technique.summary, language)}</p>
+        <small>{pickLocalized(technique.detail, language)}</small>
+      </div>
+      <div className="technique-trainer">
+        <p className="eyebrow">{labels.trainerTitle}</p>
+        <MiniTrainerGrid trainer={trainer} />
+        <strong>{pickLocalized(trainer.question, language)}</strong>
+        <div className="technique-options" role="group" aria-label={labels.trainerChoose}>
+          {trainer.options.map((option) => (
+            <button
+              key={String(option)}
+              type="button"
+              className={answered && String(option) === String(trainer.answer) ? "is-answer" : ""}
+              onClick={() => setChoice(option)}
+            >
+              {trainer.optionLabel ? trainer.optionLabel(option) : option}
+            </button>
+          ))}
+        </div>
+        {answered ? (
+          <p className={correct ? "trainer-feedback is-correct" : "trainer-feedback is-wrong"}>
+            {correct ? labels.trainerCorrect : labels.trainerWrong}
+          </p>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+function MiniTrainerGrid({ trainer }) {
+  return (
+    <div className="mini-trainer-grid" aria-hidden="true">
+      {trainer.cells.map((value, index) => (
+        <span
+          key={index}
+          className={[
+            value ? "is-given" : "",
+            trainer.focus === index ? "is-focus" : "",
+            index === 2 || index === 5 ? "is-row-edge" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          {value || trainer.marks?.[index] || ""}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function WinReview({ review, labels }) {
+  if (!review) {
+    return <p className="win-review win-review--empty">{labels.improveNoData}</p>;
+  }
+
+  if (review.clean) {
+    return (
+      <div className="win-review">
+        <p className="eyebrow">{labels.improveTitle}</p>
+        <strong>{labels.improveClean}</strong>
+      </div>
+    );
+  }
+
+  return (
+    <div className="win-review">
+      <p className="eyebrow">{labels.improveTitle}</p>
+      {review.firstWrong ? (
+        <span>
+          {labels.improveFirstError}: R{Math.floor(review.firstWrong.index / 9) + 1}C{(review.firstWrong.index % 9) + 1},{" "}
+          {review.firstWrong.value} {"->"} {review.firstWrong.better}
+        </span>
+      ) : null}
+      {review.slowest?.seconds > 0 ? (
+        <span>
+          {labels.improveSlowest}: {formatTime(review.slowest.seconds)}
+        </span>
+      ) : null}
+      {review.missedTechnique ? (
+        <span>
+          {labels.improveTechnique}: {review.missedTechnique}
+        </span>
+      ) : null}
+    </div>
   );
 }
 
@@ -2859,7 +3076,7 @@ function IconButton({ icon: Icon, label, variant = "", active = false, disabled 
   );
 }
 
-function SettingsPanel({ preferences, labels, onChange }) {
+function SettingsPanel({ preferences, labels, isPro, voiceOptions = [], onChange, onUpgrade }) {
   return (
     <div className="settings-panel">
       <SettingRow
@@ -2887,6 +3104,55 @@ function SettingsPanel({ preferences, labels, onChange }) {
               type="checkbox"
               checked={preferences.soundEnabled}
               onChange={(event) => onChange({ soundEnabled: event.target.checked })}
+            />
+            <span />
+          </label>
+        }
+      />
+      <SettingRow
+        icon={MessageCircle}
+        title={labels.coachVoice}
+        copy={labels.coachVoiceCopy}
+        control={
+          <div className="voice-control">
+            <label className="switch">
+              <input
+                type="checkbox"
+                checked={preferences.coachVoiceEnabled}
+                onChange={(event) => onChange({ coachVoiceEnabled: event.target.checked })}
+              />
+              <span />
+            </label>
+            <select
+              value={preferences.coachVoiceURI}
+              disabled={!preferences.coachVoiceEnabled}
+              onChange={(event) => onChange({ coachVoiceURI: event.target.value })}
+            >
+              <option value="auto">{labels.voiceAuto}</option>
+              {voiceOptions.length === 0 ? (
+                <option value="unavailable" disabled>
+                  {labels.voiceUnavailable}
+                </option>
+              ) : null}
+              {voiceOptions.map((voice) => (
+                <option key={voice.value} value={voice.value}>
+                  {voice.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        }
+      />
+      <SettingRow
+        icon={Sparkles}
+        title={labels.smartNotes}
+        copy={labels.smartNotesCopy}
+        control={
+          <label className="switch">
+            <input
+              type="checkbox"
+              checked={preferences.smartNotes}
+              onChange={(event) => onChange({ smartNotes: event.target.checked })}
             />
             <span />
           </label>
@@ -2925,17 +3191,27 @@ function SettingsPanel({ preferences, labels, onChange }) {
       <div className="settings-group">
         <span>{labels.theme}</span>
         <div className="choice-grid">
-          {THEMES.map((theme) => (
-            <button
-              className={preferences.theme === theme.key ? "active" : ""}
-              key={theme.key}
-              type="button"
-              onClick={() => onChange({ theme: theme.key })}
-            >
-              <i className={`theme-swatch ${theme.key}`} aria-hidden="true" />
-              {theme.label}
-            </button>
-          ))}
+          {THEMES.map((theme) => {
+            const locked = isThemePro(theme.key) && !isPro;
+            return (
+              <button
+                className={`${preferences.theme === theme.key ? "active" : ""} ${locked ? "locked" : ""}`.trim()}
+                key={theme.key}
+                type="button"
+                onClick={() => {
+                  if (locked) {
+                    onUpgrade();
+                    return;
+                  }
+                  onChange({ theme: theme.key });
+                }}
+              >
+                <i className={`theme-swatch ${theme.key}`} aria-hidden="true" />
+                {theme.label}
+                {locked ? <Lock size={14} strokeWidth={2.2} aria-label={labels.proTheme} /> : null}
+              </button>
+            );
+          })}
         </div>
       </div>
       <div className="settings-group">
@@ -2986,6 +3262,8 @@ function HistoryMiniBoard({ values, fixed, outcome }) {
 
 function HistoryTableView({
   records,
+  totalRecords = records.length,
+  isPro = true,
   labels,
   difficultyLabels,
   dailyLabel,
@@ -3019,6 +3297,9 @@ function HistoryTableView({
           <p className="history-preview-hint">{labels.previewHint}</p>
         </>
       )}
+      {!showDemo && !isPro && totalRecords > records.length ? (
+        <p className="history-preview-hint">{labels.freeHistoryLimit(records.length)}</p>
+      ) : null}
 
       <div className="history-table-scroll">
         <table className="history-grid-table">
@@ -3108,6 +3389,8 @@ function HistoryTableView({
 function HistoryAnalysisView({ record, labels, difficultyLabels, dailyLabel, langMeta }) {
   const last = record.timeline[record.timeline.length - 1];
   const wrongMoves = (record.placements || []).filter((move) => move.kind === "place" && !move.correct);
+  const firstWrong = wrongMoves[0] || null;
+  const cleanSolve = record.hintsUsed === 0 && record.mistakes === 0 && wrongMoves.length === 0;
   const when = new Date(record.endedAt);
 
   return (
@@ -3142,6 +3425,16 @@ function HistoryAnalysisView({ record, labels, difficultyLabels, dailyLabel, lan
         </section>
 
         <section className="history-analysis">
+          <div className="history-review-card">
+            <p className="eyebrow">{labels.reviewTitle}</p>
+            <strong>{cleanSolve ? labels.cleanSolve : labels.assistedSolve}</strong>
+            <span>
+              {firstWrong
+                ? `${labels.firstWrong}: #${firstWrong.stepIndex}, ${labels.wrongDigit.toLowerCase()} ${firstWrong.value}, ${labels.better} ${firstWrong.better}`
+                : labels.noWrongMoves}
+            </span>
+            {!cleanSolve ? <em>{labels.practiceTechnique}</em> : null}
+          </div>
           <h3>{labels.wrongSummary(wrongMoves.length)}</h3>
           {wrongMoves.length === 0 ? (
             <p className="history-muted">{labels.noWrongMoves}</p>

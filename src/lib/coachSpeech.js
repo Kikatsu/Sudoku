@@ -2,7 +2,7 @@
  * Picks the most natural-sounding voice for the coach from the browser's list.
  * Prefers enhanced / premium / neural labels when the OS exposes them.
  */
-export function pickBestCoachVoice(voices, speechLang) {
+export function pickBestCoachVoice(voices, speechLang, preferredURI = "auto") {
   if (!voices?.length || !speechLang) return null;
 
   const target = speechLang.toLowerCase().replace("_", "-");
@@ -14,6 +14,8 @@ export function pickBestCoachVoice(voices, speechLang) {
   });
 
   if (!candidates.length) return null;
+  const preferred = candidates.find((voice) => voice.voiceURI === preferredURI);
+  if (preferred) return preferred;
 
   const scoreVoice = (v) => {
     const n = (v.name || "").toLowerCase();
@@ -31,4 +33,27 @@ export function pickBestCoachVoice(voices, speechLang) {
   };
 
   return [...candidates].sort((a, b) => scoreVoice(b) - scoreVoice(a))[0] ?? null;
+}
+
+export function getCoachVoiceOptions(voices, speechLang) {
+  if (!voices?.length || !speechLang) return [];
+  const target = speechLang.toLowerCase().replace("_", "-");
+  const [primary] = target.split("-");
+  const seen = new Set();
+
+  return voices
+    .filter((voice) => {
+      const lang = voice.lang.toLowerCase().replace("_", "-");
+      return lang === target || lang.startsWith(`${primary}-`) || lang === primary;
+    })
+    .filter((voice) => {
+      if (seen.has(voice.voiceURI)) return false;
+      seen.add(voice.voiceURI);
+      return true;
+    })
+    .map((voice) => ({
+      label: `${voice.name}${voice.localService ? "" : " · online"}`,
+      value: voice.voiceURI,
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 }
